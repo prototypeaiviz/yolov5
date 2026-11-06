@@ -76,4 +76,11 @@ experiments:         # segment/run_experiments.py: train these one after another
     - {name: v18_yolov5s_seg_640, weights: yolov5s-seg.pt, imgsz: 640, hyp: ""}
     - {name: v18_yolov5s_seg_640_nomosaic, weights: yolov5s-seg.pt, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml}
     - {name: v18_yolov5n_seg_640_nomosaic_maskratio1, weights: yolov5n-seg.pt, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml, extra_args: "--mask-ratio 1"}
-    - {name: v18_yolov5n_seg_1280_nomosaic, weights: yolov5n-seg.pt, imgsz: 1280, hyp: data/hyps/hyp.bismart.yaml}
+    - {name: v18_yolov5n_seg_960_nomosaic, weights: yolov5n-seg.pt, imgsz: 960, hyp: data/hyps/hyp.bismart.yaml, batch_size: 8}
+    # Each new run changes one thing against a finished run, so the effect is measurable.
+    # --rect: batches as tall as the wide strips need (no square padding), much less memory. Disables mosaic and shuffle.
+    # --no-overlap: one label mask per pill instead of one merged mask image (touching pills keep their edge pixels).
+    - {name: v18_yolov5n_seg_640_nomosaic_nooverlap, weights: yolov5n-seg.pt, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml, extra_args: "--no-overlap"}
+    - {name: v18_yolov5n_seg_960_rect, weights: yolov5n-seg.pt, imgsz: 960, hyp: data/hyps/hyp.bismart.yaml, batch_size: 8, extra_args: "--rect"}
+    - {name: v18_yolov5n_seg_1280_rect, weights: yolov5n-seg.pt, imgsz: 1280, hyp: data/hyps/hyp.bismart.yaml, batch_size: 8, extra_args: "--rect"}
+    - {name: v18_yolov5s_seg_1280_rect, weights: yolov5s-seg.pt, imgsz: 1280, hyp: data/hyps/hyp.bismart.yaml, batch_size: 8, extra_args: "--rect"}
