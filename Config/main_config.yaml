@@ -70,7 +70,7 @@ experiments:         # segment/run_experiments.py: train these one after another
   skip_done: true    # skip training when <project>/<name>/weights/best.pt already exists
   report_torch: true
   report_onnx: false
-  runs:              # per run: name, weights, imgsz, hyp ("" = default), optional epochs, batch_size, extra_args
+  runs:              # per run: name, weights, imgsz, hyp ("" = default), optional cfg (model yaml), epochs, batch_size, extra_args
     - {name: v18_yolov5n_seg_640, weights: yolov5n-seg.pt, imgsz: 640, hyp: ""}
     - {name: v18_yolov5n_seg_640_nomosaic, weights: yolov5n-seg.pt, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml}
     - {name: v18_yolov5s_seg_640, weights: yolov5s-seg.pt, imgsz: 640, hyp: ""}
@@ -81,6 +81,9 @@ experiments:         # segment/run_experiments.py: train these one after another
     # --rect: batches as tall as the wide strips need (no square padding), much less memory. Disables mosaic and shuffle.
     # --no-overlap: one label mask per pill instead of one merged mask image (touching pills keep their edge pixels).
     - {name: v18_yolov5n_seg_640_nomosaic_nooverlap, weights: yolov5n-seg.pt, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml, extra_args: "--no-overlap"}
+    # proto2x: mask prototypes at stride 2 (320x320 at 640) instead of 4, backbone unchanged -> finer masks, small speed cost.
+    - {name: v18_yolov5n_seg_640_nomosaic_proto2x, weights: yolov5n-seg.pt, cfg: models/segment/yolov5n-seg-proto2x.yaml, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml, extra_args: "--mask-ratio 2"}
+    - {name: v18_yolov5s_seg_640_nomosaic_proto2x, weights: yolov5s-seg.pt, cfg: models/segment/yolov5s-seg-proto2x.yaml, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml, extra_args: "--mask-ratio 2"}
     - {name: v18_yolov5n_seg_960_rect, weights: yolov5n-seg.pt, imgsz: 960, hyp: data/hyps/hyp.bismart.yaml, batch_size: 8, extra_args: "--rect"}
     - {name: v18_yolov5n_seg_1280_rect, weights: yolov5n-seg.pt, imgsz: 1280, hyp: data/hyps/hyp.bismart.yaml, batch_size: 8, extra_args: "--rect"}
     - {name: v18_yolov5s_seg_1280_rect, weights: yolov5s-seg.pt, imgsz: 1280, hyp: data/hyps/hyp.bismart.yaml, batch_size: 8, extra_args: "--rect"}

@@ -54,6 +54,8 @@ def train_command(config, run, batch_size):
            '--workers', str(ex.workers),
            '--project', ex.project,
            '--name', run.name]
+    if run.get('cfg'):  # model yaml, e.g. models/segment/yolov5n-seg-proto2x.yaml (weights still load where shapes match)
+        cmd += ['--cfg', run.cfg]
     if run.get('hyp'):
         cmd += ['--hyp', run.hyp]
     if run.get('extra_args'):

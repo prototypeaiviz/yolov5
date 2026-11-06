@@ -833,15 +833,22 @@ class Detections:
 
 class Proto(nn.Module):
     # YOLOv5 mask Proto module for segmentation models
-    def __init__(self, c1, c_=256, c2=32):  # ch_in, number of protos, number of masks
+    def __init__(self, c1, c_=256, c2=32, up=1):  # ch_in, number of protos, number of masks, extra upsampling
         super().__init__()
+        assert up in (1, 2), f'Proto up must be 1 or 2, got {up}'
         self.cv1 = Conv(c1, c_, k=3)
         self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
         self.cv2 = Conv(c_, c_, k=3)
+        # up=2: extra learned 2x upsample (2x2 transposed conv, as in the Mask R-CNN mask head), so the prototype
+        # masks are at stride 2 (320x320 at 640 input) instead of stride 4 (160x160). Train with --mask-ratio 2.
+        self.up2 = nn.Sequential(nn.ConvTranspose2d(c_, c_, 2, 2, bias=False), nn.BatchNorm2d(c_),
+                                 nn.SiLU()) if up == 2 else None
         self.cv3 = Conv(c_, c2)
 
     def forward(self, x):
-        return self.cv3(self.cv2(self.upsample(self.cv1(x))))
+        x = self.cv2(self.upsample(self.cv1(x)))
+        up2 = getattr(self, 'up2', None)  # models saved before this option have no up2
+        return self.cv3(up2(x) if up2 is not None else x)
 
 
 class Classify(nn.Module):

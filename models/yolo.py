@@ -91,13 +91,13 @@ class Detect(nn.Module):
 
 class Segment(Detect):
     # YOLOv5 Segment head for segmentation models
-    def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=(), inplace=True):
+    def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=(), inplace=True, proto_up=1):
         super().__init__(nc, anchors, ch, inplace)
         self.nm = nm  # number of masks
         self.npr = npr  # number of protos
         self.no = 5 + nc + self.nm  # number of outputs per anchor
         self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
-        self.proto = Proto(ch[0], self.npr, self.nm)  # protos
+        self.proto = Proto(ch[0], self.npr, self.nm, up=proto_up)  # protos
         self.detect = Detect.forward
 
     def forward(self, x):
@@ -336,6 +336,8 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
                 args[1] = [list(range(args[1] * 2))] * len(f)
             if m is Segment:
                 args[3] = make_divisible(args[3] * gw, 8)
+                if len(args) == 6:  # optional 5th yaml arg: proto_up (1 = masks at stride 4, 2 = stride 2)
+                    args = [*args[:4], args[5], True, args[4]]  # nc, anchors, nm, npr, ch, inplace, proto_up
         elif m is Contract:
             c2 = ch[f] * args[0] ** 2
         elif m is Expand:
