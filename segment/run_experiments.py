@@ -13,7 +13,8 @@ Per experiment:
 A failed experiment is logged and the next one starts.
 
 Outputs in bin/Run_<timestamp>_experiments/:
-    config_used.yaml, runner.log, train_logs/<name>_bs<batch>.log, experiments.csv (one row per experiment)
+    config_used.yaml, runner.log, train/<name>_bs<batch>.log, experiments.csv (one row per experiment, everything)
+    experiments_sheet.csv / .tsv: Model + results-sheet columns (val set accuracy, then Pre/Model/Post ms)
 Each report also appends to report.summary_csv and has its own bin/Run_<timestamp>_<name>_torch folder.
 """
 from datetime import datetime
@@ -167,7 +168,7 @@ def main(config):
     if not torch.cuda.is_available() or str(ex.device).lower() == 'cpu':
         raise SystemExit('Experiments must run on GPU, but CUDA is not available or experiments.device is cpu.')
 
-    rows = []
+    rows, sheet_rows = [], []
     for k, run in enumerate(ex.runs, 1):
         logger.info(f'===== Experiment {k}/{len(ex.runs)}: {run.name} =====')
         status, batch_used, minutes = train(config, run, config.dataset.train_output)
@@ -180,8 +181,12 @@ def main(config):
                 row[f'{backend} report'] = out
                 if result:
                     row.update(result['report'])
+                    sheet_rows.append({'Model': run.name, **result['sheet']})
         rows.append(row)
         model_report.write_csv(os.path.join(config.dataset.save_path, 'experiments.csv'), rows)
+        if sheet_rows:  # results-sheet columns only, one row per model (and backend), updated after each run
+            for name, delim in (('experiments_sheet.csv', ','), ('experiments_sheet.tsv', '\t')):
+                model_report.write_csv(os.path.join(config.dataset.save_path, name), sheet_rows, delimiter=delim)
         logger.info(f'{run.name}: {status}')
 
     logger.info('===== All experiments finished =====')

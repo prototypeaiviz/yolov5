@@ -10,6 +10,8 @@ Outputs in bin/Run_<timestamp>_<model_name>/:
     test/report.json    every number, keyed by the report column names
     test/report.csv     same numbers as one CSV row
     test/summary.md     readable summary table of this run
+    test/sheet.csv      the results-sheet columns in sheet order (accuracy, then Pre/Model/Post); sheet.tsv same,
+                        tab-separated for pasting into a spreadsheet
     test/per_image.csv  per-image TP/FP/FN, IoU, precision, recall, sorted worst first
     test/worst_plots/   the plots.num_worst worst images (file name: rank, FP, FN, IoU)
     <report.summary_csv> one row appended per run (Torch and ONNX), for comparing models
@@ -93,7 +95,7 @@ def run_map(config, weights, half):
     (mp_b, mr_b, map50_b, map_b, mp_m, mr_m, map50_m, map_m, *_), _, speeds, metrics = seg_val.run(
         data=config.dataset.data_yaml,
         weights=weights,
-        batch_size=config.map.batch_size,  # val.py forces 1 for ONNX
+        batch_size=1,  # always batch 1 for validation testing
         imgsz=config.model.imgsz,
         conf_thres=config.map.conf_thres,
         iou_thres=config.map.iou_thres,
@@ -182,6 +184,19 @@ def csv_row(config, result):
     return {k: round(v, 6) if isinstance(v, float) else v for k, v in row.items()}
 
 
+def sheet_row(report, label):
+    """The columns of the results sheet, in the sheet's order: accuracy on the val set, then inspection time."""
+    cols = [f'Box mAP50 {label}', f'Box mAP50-95 {label}', f'Mask mAP50 {label}', f'Mask mAP50-95 {label}',
+            f'Mask mAP75 {label}', f'IoU {label}', f'Precision {label}', f'Recall {label}']
+    cols += [k for k in report if k.endswith(f' Mask mAP50-95 {label}') and k != f'Mask mAP50-95 {label}']  # classes
+    cols += [f'{label} Pre (ms)', f'{label} Model (ms)', f'{label} Post (ms)']
+    row = {}
+    for k in cols:
+        v = report[k]
+        row[k] = round(v, 2 if k.endswith('(ms)') else 4) if isinstance(v, float) else v
+    return row
+
+
 def write_summary(path, config, result):
     """Human-readable summary of one run: report columns in sheet order, then extras and settings."""
     def fmt(v):
@@ -206,13 +221,13 @@ def write_summary(path, config, result):
         f.write('\n'.join(lines) + '\n')
 
 
-def write_csv(path, rows):
+def write_csv(path, rows, delimiter=','):
     """Write rows with the union of their columns, in first-seen order."""
     columns = []
     for r in rows:
         columns += [k for k in r if k not in columns]
     with open(path, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=columns, restval='')
+        writer = csv.DictWriter(f, fieldnames=columns, restval='', delimiter=delimiter)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -475,6 +490,11 @@ def main(config, weights=None, label='Torch', half=None, extra=None):
     summary_md = os.path.join(config.dataset.test_output, 'summary.md')
     write_summary(summary_md, config, result)
     logger.info(f'Saved {summary_md}')
+
+    result['sheet'] = sheet_row(result['report'], result['settings']['backend'])
+    for name, delim in (('sheet.csv', ','), ('sheet.tsv', '\t')):  # .tsv pastes straight into spreadsheet cells
+        write_csv(os.path.join(config.dataset.test_output, name), [result['sheet']], delimiter=delim)
+    logger.info(f"Saved sheet.csv / sheet.tsv in {config.dataset.test_output}")
 
     row = csv_row(config, result)
     csv_path = os.path.join(config.dataset.test_output, 'report.csv')
