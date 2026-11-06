@@ -313,7 +313,7 @@ def run(
 
             pred_masks = torch.as_tensor(pred_masks, dtype=torch.uint8)
             if plots and batch_i < 3:
-                plot_masks.append(pred_masks[:15].cpu())  # filter top 15 to plot
+                plot_masks.append(pred_masks[:100].cpu())  # filter top 100 to plot (must match max_det below)
 
             # Save/log
             if save_txt:
@@ -329,7 +329,7 @@ def run(
             if len(plot_masks):
                 plot_masks = torch.cat(plot_masks, dim=0)
             plot_images_and_masks(im, targets, masks, paths, save_dir / f'val_batch{batch_i}_labels.jpg', names)
-            plot_images_and_masks(im, output_to_target(preds, max_det=15), plot_masks, paths,
+            plot_images_and_masks(im, output_to_target(preds, max_det=100), plot_masks, paths,
                                   save_dir / f'val_batch{batch_i}_pred.jpg', names)  # pred
 
         # callbacks.run('on_val_batch_end')

@@ -133,7 +133,7 @@ def run_pixel_and_timing(config, weights, half):
     pc = config.pixel
 
     def infer(im0):
-        """Run one image, return masks at original size, classes, and the three stage times in ms."""
+        """Run one image, return (boxes, cropped masks) at original size, classes, and the three stage times in ms."""
         h, w = im0.shape[:2]
         sync(device)
         t0 = time.perf_counter()
@@ -147,11 +147,11 @@ def run_pixel_and_timing(config, weights, half):
         t2 = time.perf_counter()
         det = non_max_suppression(pred, pc.conf_thres, pc.iou_nms, max_det=pc.max_det, nm=32)[0]
         masks = process_mask(proto[0], det[:, 6:], det[:, :4], im.shape[2:], upsample=True) if len(det) else det[:0, 0:0]
-        pred_masks = to_original(masks, pad, h, w)
+        pred_inst = to_original(masks, pad, h, w)
         pred_cls = det[:, 5].int().cpu().numpy()
         sync(device)
         t3 = time.perf_counter()
-        return pred_masks, pred_cls, ((t1 - t0) * 1E3, (t2 - t1) * 1E3, (t3 - t2) * 1E3)
+        return pred_inst, pred_cls, ((t1 - t0) * 1E3, (t2 - t1) * 1E3, (t3 - t2) * 1E3)
 
     # Warmup on real images, not recorded
     n_warm = min(int(config.timing.warmup_images), len(files))
@@ -163,26 +163,36 @@ def run_pixel_and_timing(config, weights, half):
 
     px_iou, px_precision, px_recall, matched, times = [], [], [], [], []
     tp = fp = fn = 0
+    logger.info(f'Pixel metrics and timing on {len(files)} images')
+    t_loop = time.perf_counter()
     for i, (file, label) in enumerate(zip(files, labels), 1):
+        t_img = time.perf_counter()
         im0 = cv2.imread(str(file))
         if im0 is None:
             logger.warning(f'Cannot read {file}')
             continue
-        pred_masks, pred_cls, t = infer(im0)
+        pred_inst, pred_cls, t = infer(im0)
         times.append(t)
 
-        gt_cls, gt_masks = load_gt(label, *im0.shape[:2])
-        ious, fp_i, fn_i = instance_stats(pred_cls, pred_masks, gt_cls, gt_masks, pc.match_iou)
+        h, w = im0.shape[:2]
+        gt_cls, *gt_inst = load_gt(label, h, w)
+        ious, fp_i, fn_i = instance_stats(pred_cls, pred_inst, gt_cls, gt_inst, pc.match_iou)
         matched += ious
         tp += len(ious)
         fp += fp_i
         fn += fn_i
-        a, b, c = pixel_stats(pred_cls, pred_masks, gt_cls, gt_masks, classes)
+        a, b, c = pixel_stats(pred_cls, pred_inst, gt_cls, gt_inst, classes, h, w)
         px_iou += a
         px_precision += b
         px_recall += c
-        if i % 50 == 0:
-            logger.info(f'{i}/{len(files)}')
+
+        dt = time.perf_counter() - t_img
+        if dt > 10:
+            logger.warning(f'Slow image {i}: {dt:.1f} s, {w}x{h}, {len(pred_cls)} predictions, '
+                           f'{len(gt_cls)} labels: {file}')
+        if i % 10 == 0 or i == len(files):
+            elapsed = time.perf_counter() - t_loop
+            logger.info(f'{i}/{len(files)}  {elapsed:.0f} s elapsed, {elapsed / i:.2f} s/image')
 
     times = np.array(times)  # (n, 3) pre, model, post
     total = times.sum(1)
