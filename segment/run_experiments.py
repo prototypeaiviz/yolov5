@@ -8,7 +8,8 @@ Per experiment:
     1. Skip training if <project>/<name>/weights/best.pt exists and experiments.skip_done is true.
     2. An unfinished run folder with the same name is renamed to <name>_incomplete_<timestamp> (never deleted).
     3. Train with segment/train.py. On CUDA out of memory, retry with each batch size in experiments.oom_batch_sizes.
-    4. Run the Torch report (and the ONNX report if experiments.report_onnx) on best.pt.
+    4. Run the Torch report (and the ONNX report if experiments.report_onnx) on best.pt, each in its own process,
+       so no GPU memory is left reserved when the next training starts.
 A failed experiment is logged and the next one starts.
 
 Outputs in bin/Run_<timestamp>_experiments/:
@@ -16,7 +17,9 @@ Outputs in bin/Run_<timestamp>_experiments/:
 Each report also appends to report.summary_csv and has its own bin/Run_<timestamp>_<name>_torch folder.
 """
 from datetime import datetime
+import multiprocessing as mp
 import os
+import queue as queue_module
 import subprocess
 import sys
 import time
@@ -103,25 +106,21 @@ def train(config, run, log_dir):
             return f'trained{note}', batch_size, minutes
         if oom:
             logger.warning(f'{run.name}: CUDA out of memory with batch {batch_size}')
-            torch.cuda.empty_cache()
             continue
         logger.error(f'{run.name}: training failed (exit code {code}), see log in {log_dir}')
         return f'failed (exit code {code})', batch_size, minutes
     return 'failed (out of memory at every batch size)', '', (time.time() - t0) / 60
 
 
-def report(config, run, runner_log_dir, backend):
-    """Run model_report (Torch or ONNX) on the experiment's best.pt. Return the report dict or None."""
-    ex = config.experiments
-    cfg = OmegaConf.create(OmegaConf.to_container(config, resolve=True))
-    cfg.model_name = run.name
-    cfg.model.weights = os.path.join(ROOT, ex.project, run.name, 'weights', 'best.pt')
-    cfg.model.imgsz = run.get('imgsz', 640)
-    cfg.dataset.data_yaml = ex.data_yaml or config.dataset.data_yaml
+def report_worker(cfg_dict, backend, queue):
+    """Child process: run one report and send (result, output folder or error) back. Its GPU memory is fully
+    released when the process exits, so the next training starts with a clean GPU."""
+    result, out = None, 'failed: no result'
     try:
+        cfg = OmegaConf.create(cfg_dict)
+        os.environ['CUDA_LAUNCH_BLOCKING'] = str(cfg.environment.cuda_launch_blocking)
         if backend == 'onnx':
             from segment import model_report_onnx
-            cfg.onnx.weights = ''  # export this best.pt
             model_report.prepare_run(cfg, suffix='_onnx')
             result = model_report_onnx.main(cfg)
         else:
@@ -129,8 +128,35 @@ def report(config, run, runner_log_dir, backend):
             result = model_report.main(cfg)
         out = cfg.dataset.save_path
     except (Exception, SystemExit) as e:  # one failed report must not stop the queue
-        result, out = None, f'failed: {e}'
-    model_report.prepare_logger(runner_log_dir, 'runner.log')  # prepare_run replaced the runner's log handlers
+        out = f'failed: {e!r}'
+    finally:
+        queue.put((result, out))
+
+
+def report(config, run, backend):
+    """Run model_report (Torch or ONNX) on the experiment's best.pt in a separate process.
+    Return (report dict or None, output folder or error)."""
+    ex = config.experiments
+    cfg = OmegaConf.create(OmegaConf.to_container(config, resolve=True))
+    cfg.model_name = run.name
+    cfg.model.weights = os.path.join(ROOT, ex.project, run.name, 'weights', 'best.pt')
+    cfg.model.imgsz = run.get('imgsz', 640)
+    cfg.dataset.data_yaml = ex.data_yaml or config.dataset.data_yaml
+    if backend == 'onnx':
+        cfg.onnx.weights = ''  # export this best.pt
+
+    ctx = mp.get_context('spawn')  # fresh process: no CUDA state shared with the runner or the next training
+    queue = ctx.Queue()
+    proc = ctx.Process(target=report_worker, args=(OmegaConf.to_container(cfg, resolve=True), backend, queue))
+    proc.start()
+    result, out = None, None
+    while out is None:
+        try:
+            result, out = queue.get(timeout=10)
+        except queue_module.Empty:
+            if not proc.is_alive():  # crashed without sending a result (e.g. killed, segfault)
+                out = f'failed: report process exited with code {proc.exitcode}'
+    proc.join()
     if result is None:
         logger.error(f'{run.name}: {backend} report {out}')
     return result, out
@@ -150,7 +176,7 @@ def main(config):
                'Status': status, 'Batch size': batch_used, 'Train minutes': round(minutes, 1)}
         if os.path.exists(os.path.join(ROOT, ex.project, run.name, 'weights', 'best.pt')):
             for backend in (['torch'] if ex.report_torch else []) + (['onnx'] if ex.report_onnx else []):
-                result, out = report(config, run, config.dataset.save_path, backend)
+                result, out = report(config, run, backend)
                 row[f'{backend} report'] = out
                 if result:
                     row.update(result['report'])
