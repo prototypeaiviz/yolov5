@@ -1,0 +1,38 @@
+# Settings for segment/model_report.py
+# Run from the repo root after training:  python segment/model_report.py
+
+# Name used in the output folder bin/Run_<timestamp>_<model_name>.
+# Leave empty to use the training run name (the folder that contains weights/best.pt).
+model_name: ""
+
+environment:
+  # "1" makes every CUDA call synchronous and inflates the timing numbers. Keep "0" for timing.
+  cuda_launch_blocking: "0"
+
+model:
+  weights: "BISMART/v18_yolov5n_seg_640/weights/best.pt"
+  device: "0"        # "0" for the first GPU, "cpu" for CPU
+  imgsz: 640
+  half: false        # true = FP16 for metrics and timing (CUDA only)
+
+dataset:
+  data_yaml: "/media/aiviz05/Dati/DATA/BISMART/SUBSAMPLED_DATA_V18/bismart_v18.yaml"
+  split: "val"
+  save_path: ""      # set by the script
+  test_output: ""    # set by the script
+
+map:                 # segment/val.py settings (standard mAP evaluation)
+  conf_thres: 0.001
+  iou_thres: 0.6
+  max_det: 300
+  batch_size: 16
+  workers: 8
+
+pixel:               # IoU / precision / recall at a fixed confidence, and timing
+  conf_thres: 0.25
+  iou_nms: 0.45
+  match_iou: 0.5
+  max_det: 1000
+
+timing:
+  warmup_images: 10  # images run before timing starts, not recorded

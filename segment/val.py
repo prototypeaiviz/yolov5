@@ -157,6 +157,7 @@ def run(
         mask_downsample_ratio=1,
         compute_loss=None,
         callbacks=Callbacks(),
+        return_metrics=False,  # also return the Metrics object (per-class AP, mAP75)
 ):
     if save_json:
         check_requirements(['pycocotools'])
@@ -399,7 +400,8 @@ def run(
         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
         LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
     final_metric = mp_bbox, mr_bbox, map50_bbox, map_bbox, mp_mask, mr_mask, map50_mask, map_mask
-    return (*final_metric, *(loss.cpu() / len(dataloader)).tolist()), metrics.get_maps(nc), t
+    out = (*final_metric, *(loss.cpu() / len(dataloader)).tolist()), metrics.get_maps(nc), t
+    return (*out, metrics) if return_metrics else out
 
 
 def parse_opt():
