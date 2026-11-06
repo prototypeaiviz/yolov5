@@ -8,6 +8,8 @@ Outputs in bin/Run_<timestamp>_<model_name>/:
     config_used.yaml
     test/report.log
     test/report.json    every number, keyed by the report column names
+    test/report.csv     same numbers as one CSV row
+    <report.summary_csv> one row appended per run (Torch and ONNX), for comparing models
     test/val/           segment/val.py plots (masks drawn at 160x160, coarse)
     test/pred_plots/    predictions drawn at full original resolution (plots.num_images images)
 
@@ -18,10 +20,11 @@ Metric sources:
 Timing (batch 1, per image, CUDA synchronized):
     Pre    letterbox + HWC->CHW + to device + normalize (image decoding from disk excluded)
     Model  forward pass (for ONNX this includes the host/device copies done by DetectMultiBackend)
-    Post   NMS + mask decoding on the device (masks at network input size)
+    Post   NMS + mask decoding on the device (masks at network input size, pixel.mask_mode decides how)
     Mapping masks to the original image size is evaluation-only work and is reported separately in "extra".
 """
 from datetime import datetime
+import csv
 import json
 import os
 import sys
@@ -47,7 +50,7 @@ from utils.augmentations import letterbox  # noqa: E402
 from utils.dataloaders import img2label_paths  # noqa: E402
 from utils.general import check_dataset, check_img_size, non_max_suppression  # noqa: E402
 from utils.plots import colors  # noqa: E402
-from utils.segment.general import process_mask  # noqa: E402
+from utils.segment.general import process_mask, process_mask_upsample  # noqa: E402
 from utils.torch_utils import select_device  # noqa: E402
 
 
@@ -144,6 +147,58 @@ def plot_prediction(im0, pred, pred_cls, pred_conf, gt, names, cfg_plots, path):
     cv2.imwrite(path, canvas)
 
 
+# List values in "extra" that are split into one CSV column per element
+CSV_SPLIT = {
+    'Instance TP/FP/FN': ['Instance TP', 'Instance FP', 'Instance FN'],
+    'val.py Box P/R (best-F1 conf)': ['val.py Box P (best-F1 conf)', 'val.py Box R (best-F1 conf)'],
+    'val.py Mask P/R (best-F1 conf)': ['val.py Mask P (best-F1 conf)', 'val.py Mask R (best-F1 conf)'],
+    'val.py speed pre/inference/NMS (ms)': ['val.py speed pre (ms)', 'val.py speed inference (ms)',
+                                            'val.py speed NMS (ms)'],
+    'P95 pre/model/post (ms)': ['P95 pre (ms)', 'P95 model (ms)', 'P95 post (ms)'],
+    'Mask to original size avg/P95 (ms, eval only)': ['Mask to original size avg (ms, eval only)',
+                                                      'Mask to original size P95 (ms, eval only)']}
+
+
+def csv_row(config, result):
+    """Flatten report, extra and settings into one CSV row (ordered dict of column -> value)."""
+    row = {'Run': os.path.basename(config.dataset.save_path),
+           'Model': config.model_name,
+           'Backend': result['settings']['backend'],
+           'Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+    for section in ('report', 'extra', 'settings'):
+        for k, v in result[section].items():
+            if isinstance(v, (list, tuple)):
+                names = CSV_SPLIT.get(k)
+                if names and len(names) == len(v):
+                    row.update(zip(names, v))
+                else:
+                    row[k] = ';'.join(str(x) for x in v)
+            else:
+                row[k] = v
+    return {k: round(v, 6) if isinstance(v, float) else v for k, v in row.items()}
+
+
+def write_csv(path, rows):
+    """Write rows with the union of their columns, in first-seen order."""
+    columns = []
+    for r in rows:
+        columns += [k for k in r if k not in columns]
+    with open(path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=columns, restval='')
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def append_summary(path, row):
+    """Append one row to the summary CSV. Rewrites the file so new columns (other backend/classes) are added."""
+    rows = []
+    if os.path.exists(path):
+        with open(path, newline='') as f:
+            rows = list(csv.DictReader(f))
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    write_csv(path, rows + [row])
+
+
 def run_pixel_and_timing(config, weights, half):
     """Pixel/instance metrics at a fixed confidence, and per-image Pre/Model/Post timing at batch 1."""
     device = select_device(config.model.device)
@@ -163,6 +218,16 @@ def run_pixel_and_timing(config, weights, half):
     classes = list(range(len(names)))
     pc = config.pixel
 
+    mask_mode = config.pixel.get('mask_mode', 'crop_then_upsample')
+    if mask_mode == 'upsample_then_crop':  # upsample masks to input size, then cut at the box: smoother edges
+        decode_masks = process_mask_upsample
+    elif mask_mode == 'crop_then_upsample':  # cut at the box on the 160x160 grid, then upsample (YOLOv5 predict.py)
+        def decode_masks(protos, masks_in, bboxes, shape):
+            return process_mask(protos, masks_in, bboxes, shape, upsample=True)
+    else:
+        raise SystemExit(f'Unknown pixel.mask_mode "{mask_mode}", use upsample_then_crop or crop_then_upsample')
+    logger.info(f'Mask post-processing: {mask_mode}')
+
     def infer(im0):
         """Run one image. Return (boxes, cropped masks) at original size, classes, confidences and stage times in ms:
         pre, model, post (NMS + mask decoding), mask-to-original (evaluation only, not part of the total)."""
@@ -178,7 +243,7 @@ def run_pixel_and_timing(config, weights, half):
         sync(device)
         t2 = time.perf_counter()
         det = non_max_suppression(pred, pc.conf_thres, pc.iou_nms, max_det=pc.max_det, nm=32)[0]
-        masks = process_mask(proto[0], det[:, 6:], det[:, :4], im.shape[2:], upsample=True) if len(det) else det[:0, 0:0]
+        masks = decode_masks(proto[0], det[:, 6:].float(), det[:, :4].float(), im.shape[2:]) if len(det) else det[:0, 0:0]
         sync(device)
         t3 = time.perf_counter()
         pred_inst = to_original(masks, pad, h, w)
@@ -324,6 +389,7 @@ def main(config, weights=None, label='Torch', half=None, extra=None):
             'imgsz': config.model.imgsz,
             'map_conf_thres': config.map.conf_thres,
             'pixel_conf_thres': config.pixel.conf_thres,
+            'mask_mode': config.pixel.get('mask_mode', 'crop_then_upsample'),
             'match_iou': config.pixel.match_iou}}
 
     logger.info('Report')
@@ -337,6 +403,15 @@ def main(config, weights=None, label='Torch', half=None, extra=None):
     with open(json_path, 'w') as f:
         json.dump(result, f, indent=2)
     logger.info(f'Saved {json_path}')
+
+    row = csv_row(config, result)
+    csv_path = os.path.join(config.dataset.test_output, 'report.csv')
+    write_csv(csv_path, [row])
+    logger.info(f'Saved {csv_path}')
+    summary = config.get('report', {}).get('summary_csv', '')
+    if summary:
+        append_summary(summary, row)
+        logger.info(f'Appended to {summary}')
     return result
 
 

@@ -34,6 +34,10 @@ pixel:               # IoU / precision / recall at a fixed confidence, and timin
   iou_nms: 0.45
   match_iou: 0.5
   max_det: 1000
+  # How predicted masks are built (IoU/Precision/Recall, timing, pred_plots; val.py mAP is not affected):
+  #   upsample_then_crop: upsample to 640 first, then cut at the box -> smoother edges and corners
+  #   crop_then_upsample: cut at the box on the 160x160 grid, then upsample (old behaviour, YOLOv5 predict.py)
+  mask_mode: upsample_then_crop
 
 timing:
   warmup_images: 10  # images run before timing starts, not recorded
@@ -51,3 +55,6 @@ plots:               # segment/model_report.py prediction images at full resolut
   draw_gt: true      # draw label outlines for comparison
   gt_color: [0, 255, 0]  # label outline color, BGR
   show_conf: false   # write class and confidence next to each prediction
+
+report:
+  summary_csv: "bin/summary.csv"  # one row per report run (Torch and ONNX); empty = do not write
