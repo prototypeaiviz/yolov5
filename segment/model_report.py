@@ -8,7 +8,8 @@ Outputs in bin/Run_<timestamp>_<model_name>/:
     config_used.yaml
     test/report.log
     test/report.json    every number, keyed by the report column names
-    test/val/           segment/val.py plots
+    test/val/           segment/val.py plots (masks drawn at 160x160, coarse)
+    test/pred_plots/    predictions drawn at full original resolution (plots.num_images images)
 
 Metric sources:
     Box/Mask mAP*, per-class Mask mAP50-95   segment/val.py at map.conf_thres (standard mAP)
@@ -17,7 +18,8 @@ Metric sources:
 Timing (batch 1, per image, CUDA synchronized):
     Pre    letterbox + HWC->CHW + to device + normalize (image decoding from disk excluded)
     Model  forward pass (for ONNX this includes the host/device copies done by DetectMultiBackend)
-    Post   NMS + mask decoding + resize masks to the original image size
+    Post   NMS + mask decoding on the device (masks at network input size)
+    Mapping masks to the original image size is evaluation-only work and is reported separately in "extra".
 """
 from datetime import datetime
 import json
@@ -44,6 +46,7 @@ from segment.eval_iou import instance_stats, list_images, load_gt, mean, pixel_s
 from utils.augmentations import letterbox  # noqa: E402
 from utils.dataloaders import img2label_paths  # noqa: E402
 from utils.general import check_dataset, check_img_size, non_max_suppression  # noqa: E402
+from utils.plots import colors  # noqa: E402
 from utils.segment.general import process_mask  # noqa: E402
 from utils.torch_utils import select_device  # noqa: E402
 
@@ -113,6 +116,34 @@ def run_map(config, weights, half):
         'val_speed_ms': [float(v) for v in speeds]}
 
 
+def plot_prediction(im0, pred, pred_cls, pred_conf, gt, names, cfg_plots, path):
+    """Draw predicted masks at the original image resolution, optionally with label outlines, and save as JPEG.
+
+    Predictions: filled with the class color plus a class-color outline. Labels: thin outline in plots.gt_color (BGR).
+    """
+    canvas = im0.copy()
+    alpha = float(cfg_plots.alpha)
+    thick = max(1, round(max(im0.shape[:2]) / 1000))
+    for (x0, y0, x1, y1), crop, c, conf in zip(*pred, pred_cls, pred_conf):
+        if not crop.any():
+            continue
+        color = np.array(colors(int(c), bgr=True), dtype=np.float32)
+        region = canvas[y0:y1, x0:x1]
+        region[crop] = (region[crop] * (1 - alpha) + color * alpha).astype(np.uint8)
+        contours, _ = cv2.findContours(crop.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        cv2.drawContours(canvas, contours, -1, color.tolist(), thick, offset=(int(x0), int(y0)))
+        if cfg_plots.show_conf:
+            cv2.putText(canvas, f'{names[int(c)]} {conf:.2f}', (int(x0), max(int(y0) - 3, 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4 * thick, color.tolist(), thick, cv2.LINE_AA)
+    if cfg_plots.draw_gt:
+        gt_color = tuple(int(v) for v in cfg_plots.gt_color)
+        for (x0, y0, x1, y1), crop in zip(*gt):
+            if crop.size:
+                contours, _ = cv2.findContours(crop.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+                cv2.drawContours(canvas, contours, -1, gt_color, thick, offset=(int(x0), int(y0)))
+    cv2.imwrite(path, canvas)
+
+
 def run_pixel_and_timing(config, weights, half):
     """Pixel/instance metrics at a fixed confidence, and per-image Pre/Model/Post timing at batch 1."""
     device = select_device(config.model.device)
@@ -133,7 +164,8 @@ def run_pixel_and_timing(config, weights, half):
     pc = config.pixel
 
     def infer(im0):
-        """Run one image, return (boxes, cropped masks) at original size, classes, and the three stage times in ms."""
+        """Run one image. Return (boxes, cropped masks) at original size, classes, confidences and stage times in ms:
+        pre, model, post (NMS + mask decoding), mask-to-original (evaluation only, not part of the total)."""
         h, w = im0.shape[:2]
         sync(device)
         t0 = time.perf_counter()
@@ -147,11 +179,13 @@ def run_pixel_and_timing(config, weights, half):
         t2 = time.perf_counter()
         det = non_max_suppression(pred, pc.conf_thres, pc.iou_nms, max_det=pc.max_det, nm=32)[0]
         masks = process_mask(proto[0], det[:, 6:], det[:, :4], im.shape[2:], upsample=True) if len(det) else det[:0, 0:0]
-        pred_inst = to_original(masks, pad, h, w)
-        pred_cls = det[:, 5].int().cpu().numpy()
         sync(device)
         t3 = time.perf_counter()
-        return pred_inst, pred_cls, ((t1 - t0) * 1E3, (t2 - t1) * 1E3, (t3 - t2) * 1E3)
+        pred_inst = to_original(masks, pad, h, w)
+        pred_cls = det[:, 5].int().cpu().numpy()
+        pred_conf = det[:, 4].float().cpu().numpy()
+        t4 = time.perf_counter()
+        return pred_inst, pred_cls, pred_conf, ((t1 - t0) * 1E3, (t2 - t1) * 1E3, (t3 - t2) * 1E3, (t4 - t3) * 1E3)
 
     # Warmup on real images, not recorded
     n_warm = min(int(config.timing.warmup_images), len(files))
@@ -160,6 +194,12 @@ def run_pixel_and_timing(config, weights, half):
         if im0 is not None:
             infer(im0)
     logger.info(f'Timing warmup done on {n_warm} images')
+
+    cfg_plots = config.plots
+    n_plots = int(cfg_plots.num_images)
+    plot_dir = os.path.join(config.dataset.test_output, 'pred_plots')
+    if n_plots:
+        os.makedirs(plot_dir, exist_ok=True)
 
     px_iou, px_precision, px_recall, matched, times = [], [], [], [], []
     tp = fp = fn = 0
@@ -171,11 +211,14 @@ def run_pixel_and_timing(config, weights, half):
         if im0 is None:
             logger.warning(f'Cannot read {file}')
             continue
-        pred_inst, pred_cls, t = infer(im0)
+        pred_inst, pred_cls, pred_conf, t = infer(im0)
         times.append(t)
 
         h, w = im0.shape[:2]
         gt_cls, *gt_inst = load_gt(label, h, w)
+        if i <= n_plots:
+            plot_prediction(im0, pred_inst, pred_cls, pred_conf, gt_inst, names, cfg_plots,
+                            os.path.join(plot_dir, f'{i:04d}_{os.path.splitext(os.path.basename(str(file)))[0]}.jpg'))
         ious, fp_i, fn_i = instance_stats(pred_cls, pred_inst, gt_cls, gt_inst, pc.match_iou)
         matched += ious
         tp += len(ious)
@@ -194,8 +237,8 @@ def run_pixel_and_timing(config, weights, half):
             elapsed = time.perf_counter() - t_loop
             logger.info(f'{i}/{len(files)}  {elapsed:.0f} s elapsed, {elapsed / i:.2f} s/image')
 
-    times = np.array(times)  # (n, 3) pre, model, post
-    total = times.sum(1)
+    times = np.array(times)  # (n, 4) pre, model, post, mask-to-original
+    total = times[:, :3].sum(1)  # deployment total: pre + model + post
     return names, {
         'images': len(times),
         'pixel_iou': mean(px_iou),
@@ -215,6 +258,8 @@ def run_pixel_and_timing(config, weights, half):
         'model_p95_ms': float(np.percentile(times[:, 1], 95)),
         'post_p95_ms': float(np.percentile(times[:, 2], 95)),
         'total_p95_ms': float(np.percentile(total, 95)),
+        'to_original_ms': float(times[:, 3].mean()),
+        'to_original_p95_ms': float(np.percentile(times[:, 3], 95)),
         'device': torch.cuda.get_device_name(device) if device.type == 'cuda' else 'cpu',
         'providers': providers,
         'half': half}
@@ -224,6 +269,10 @@ def main(config, weights=None, label='Torch', half=None, extra=None):
     """Run every metric and timing for one model. `label` is the column suffix (Torch, ONNX)."""
     weights = weights or config.model.weights
     half = config.model.half if half is None else half
+    if config.model.get('require_cuda', True) and (str(config.model.device).lower() == 'cpu' or
+                                                   not torch.cuda.is_available()):
+        raise SystemExit(f'Inspection must run on GPU, but model.device is "{config.model.device}" and CUDA '
+                         f'available is {torch.cuda.is_available()}. Set model.require_cuda: false to run on CPU.')
     logger.info(f'Weights: {weights}  backend: {label}  half: {half}')
     t_start = time.perf_counter()
 
@@ -261,6 +310,7 @@ def main(config, weights=None, label='Torch', half=None, extra=None):
             'val.py Mask P/R (best-F1 conf)': [m['mask_precision_best_f1'], m['mask_recall_best_f1']],
             'val.py speed pre/inference/NMS (ms)': m['val_speed_ms'],
             'P95 pre/model/post (ms)': [p['pre_p95_ms'], p['model_p95_ms'], p['post_p95_ms']],
+            'Mask to original size avg/P95 (ms, eval only)': [p['to_original_ms'], p['to_original_p95_ms']],
             'Report wall time (s)': time.perf_counter() - t_start},
         'settings': {
             'backend': label,

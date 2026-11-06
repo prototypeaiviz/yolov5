@@ -12,6 +12,7 @@ environment:
 model:
   weights: "BISMART/v18_yolov5n_seg_640/weights/best.pt"
   device: "0"        # "0" for the first GPU, "cpu" for CPU
+  require_cuda: true # inspection runs on GPU: stop instead of silently running on CPU
   imgsz: 640
   half: false        # true = FP16 for metrics and timing (CUDA only)
 
@@ -43,3 +44,10 @@ onnx:                # segment/model_report_onnx.py only
   simplify: false    # true needs the onnxsim package
   half: false        # true = FP16 ONNX (needs a GPU device for export)
   require_cuda: true # stop if ONNX Runtime falls back to CPU when a GPU is requested
+
+plots:               # segment/model_report.py prediction images at full resolution (test/pred_plots/)
+  num_images: 20     # first N images of the split; 0 = no plots
+  alpha: 0.4         # fill opacity of predicted masks
+  draw_gt: true      # draw label outlines for comparison
+  gt_color: [0, 255, 0]  # label outline color, BGR
+  show_conf: false   # write class and confidence next to each prediction
