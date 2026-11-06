@@ -158,9 +158,11 @@ def run(
         compute_loss=None,
         callbacks=Callbacks(),
         return_metrics=False,  # also return the Metrics object (per-class AP, mAP75)
+        upsample_masks=False,  # mask metrics on masks upsampled to input size before box crop (model_report.py)
 ):
     if save_json:
         check_requirements(['pycocotools'])
+    if save_json or upsample_masks:
         process = process_mask_upsample  # more accurate
     else:
         process = process_mask  # faster
@@ -313,7 +315,8 @@ def run(
 
             pred_masks = torch.as_tensor(pred_masks, dtype=torch.uint8)
             if plots and batch_i < 3:
-                plot_masks.append(pred_masks[:100].cpu())  # filter top 100 to plot (must match max_det below)
+                # filter top 100 to plot (must match max_det below); keep plot masks small when upsampled
+                plot_masks.append((pred_masks[:100, ::4, ::4] if upsample_masks else pred_masks[:100]).cpu())
 
             # Save/log
             if save_txt:

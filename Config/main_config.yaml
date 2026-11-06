@@ -51,6 +51,7 @@ onnx:                # segment/model_report_onnx.py only
 
 plots:               # segment/model_report.py prediction images at full resolution (test/pred_plots/)
   num_images: 20     # first N images of the split; 0 = no plots
+  num_worst: 20      # worst N images by FP + FN, then lowest IoU (test/worst_plots); 0 = none
   alpha: 0.4         # fill opacity of predicted masks
   draw_gt: true      # draw label outlines for comparison
   gt_color: [0, 255, 0]  # label outline color, BGR
@@ -58,3 +59,22 @@ plots:               # segment/model_report.py prediction images at full resolut
 
 report:
   summary_csv: "bin/summary.csv"  # one row per report run (Torch and ONNX); empty = do not write
+
+experiments:         # segment/run_experiments.py: train these one after another, then report each best.pt
+  data_yaml: ""      # empty = dataset.data_yaml (same data for training and reports)
+  project: "BISMART" # train.py --project (also the W&B project name)
+  epochs: 100
+  batch_size: 16
+  oom_batch_sizes: [8, 4]  # retried in this order after CUDA out of memory
+  device: "0"
+  workers: 8
+  skip_done: true    # skip training when <project>/<name>/weights/best.pt already exists
+  report_torch: true
+  report_onnx: false
+  runs:              # per run: name, weights, imgsz, hyp ("" = default), optional epochs, batch_size, extra_args
+    - {name: v18_yolov5n_seg_640, weights: yolov5n-seg.pt, imgsz: 640, hyp: ""}
+    - {name: v18_yolov5n_seg_640_nomosaic, weights: yolov5n-seg.pt, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml}
+    - {name: v18_yolov5s_seg_640, weights: yolov5s-seg.pt, imgsz: 640, hyp: ""}
+    - {name: v18_yolov5s_seg_640_nomosaic, weights: yolov5s-seg.pt, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml}
+    - {name: v18_yolov5n_seg_640_nomosaic_maskratio1, weights: yolov5n-seg.pt, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml, extra_args: "--mask-ratio 1"}
+    - {name: v18_yolov5n_seg_1280_nomosaic, weights: yolov5n-seg.pt, imgsz: 1280, hyp: data/hyps/hyp.bismart.yaml}

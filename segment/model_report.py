@@ -9,6 +9,9 @@ Outputs in bin/Run_<timestamp>_<model_name>/:
     test/report.log
     test/report.json    every number, keyed by the report column names
     test/report.csv     same numbers as one CSV row
+    test/summary.md     readable summary table of this run
+    test/per_image.csv  per-image TP/FP/FN, IoU, precision, recall, sorted worst first
+    test/worst_plots/   the plots.num_worst worst images (file name: rank, FP, FN, IoU)
     <report.summary_csv> one row appended per run (Torch and ONNX), for comparing models
     test/val/           segment/val.py plots (masks drawn at 160x160, coarse)
     test/pred_plots/    predictions drawn at full original resolution (plots.num_images images)
@@ -102,7 +105,8 @@ def run_map(config, weights, half):
         project=config.dataset.test_output,
         name='val',
         exist_ok=True,
-        return_metrics=True)
+        return_metrics=True,
+        upsample_masks=config.pixel.get('mask_mode', 'crop_then_upsample') == 'upsample_then_crop')
     return {
         'box_map50': float(map50_b),
         'box_map50_95': float(map_b),
@@ -154,7 +158,7 @@ CSV_SPLIT = {
     'val.py Mask P/R (best-F1 conf)': ['val.py Mask P (best-F1 conf)', 'val.py Mask R (best-F1 conf)'],
     'val.py speed pre/inference/NMS (ms)': ['val.py speed pre (ms)', 'val.py speed inference (ms)',
                                             'val.py speed NMS (ms)'],
-    'P95 pre/model/post (ms)': ['P95 pre (ms)', 'P95 model (ms)', 'P95 post (ms)'],
+    'P95 pre/model/post/total (ms)': ['P95 pre (ms)', 'P95 model (ms)', 'P95 post (ms)', 'P95 total (ms)'],
     'Mask to original size avg/P95 (ms, eval only)': ['Mask to original size avg (ms, eval only)',
                                                       'Mask to original size P95 (ms, eval only)']}
 
@@ -176,6 +180,30 @@ def csv_row(config, result):
             else:
                 row[k] = v
     return {k: round(v, 6) if isinstance(v, float) else v for k, v in row.items()}
+
+
+def write_summary(path, config, result):
+    """Human-readable summary of one run: report columns in sheet order, then extras and settings."""
+    def fmt(v):
+        if isinstance(v, float):
+            return f'{v:.4f}'
+        if isinstance(v, (list, tuple)):
+            return ', '.join(fmt(x) for x in v)
+        return str(v)
+
+    st = result['settings']
+    lines = [f"# {os.path.basename(config.dataset.save_path)}", '',
+             f"- Model: {config.model_name}  ({st['backend']}, {'FP16' if st['half'] else 'FP32'}, {st['device']})",
+             f"- Weights: {st['weights']}",
+             f"- Data: {st['data']}  split {st['split']}, {st['images_timed']} images",
+             f"- Confidence: mAP {st['map_conf_thres']}, IoU/Precision/Recall {st['pixel_conf_thres']}, "
+             f"mask_mode {st['mask_mode']}",
+             '', '## Report', '', '| Column | Value |', '|---|---|']
+    lines += [f'| {k} | {fmt(v)} |' for k, v in result['report'].items()]
+    lines += ['', '## Extra', '', '| Item | Value |', '|---|---|']
+    lines += [f'| {k} | {fmt(v)} |' for k, v in result['extra'].items()]
+    with open(path, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
 
 
 def write_csv(path, rows):
@@ -266,7 +294,7 @@ def run_pixel_and_timing(config, weights, half):
     if n_plots:
         os.makedirs(plot_dir, exist_ok=True)
 
-    px_iou, px_precision, px_recall, matched, times = [], [], [], [], []
+    px_iou, px_precision, px_recall, matched, times, per_image = [], [], [], [], [], []
     tp = fp = fn = 0
     logger.info(f'Pixel metrics and timing on {len(files)} images')
     t_loop = time.perf_counter()
@@ -293,6 +321,22 @@ def run_pixel_and_timing(config, weights, half):
         px_iou += a
         px_precision += b
         px_recall += c
+        per_image.append({
+            'Index': i,
+            'Image': str(file),
+            'Width': w,
+            'Height': h,
+            'Labels': len(gt_cls),
+            'Predictions': len(pred_cls),
+            'TP': len(ious),
+            'FP': fp_i,
+            'FN': fn_i,
+            'Pixel IoU': round(mean(a), 6),
+            'Pixel precision': round(mean(b), 6),
+            'Pixel recall': round(mean(c), 6),
+            'Mean IoU (matched)': round(mean(ious), 6),
+            'Min confidence': round(float(pred_conf.min()), 4) if len(pred_conf) else '',
+            'Total ms': round(sum(t[:3]), 3)})
 
         dt = time.perf_counter() - t_img
         if dt > 10:
@@ -301,6 +345,31 @@ def run_pixel_and_timing(config, weights, half):
         if i % 10 == 0 or i == len(files):
             elapsed = time.perf_counter() - t_loop
             logger.info(f'{i}/{len(files)}  {elapsed:.0f} s elapsed, {elapsed / i:.2f} s/image')
+
+    # Per-image table, worst first: most errors (FP + FN), then lowest pixel IoU
+    def badness(r):
+        iou = r['Pixel IoU']
+        return -(r['FP'] + r['FN']), iou if iou == iou else -1.0  # NaN IoU (empty image) sorts first among ties
+    ranked = sorted(per_image, key=badness)
+    for rank, r in enumerate(ranked, 1):
+        r['Worst rank'] = rank
+    write_csv(os.path.join(config.dataset.test_output, 'per_image.csv'), ranked)
+    logger.info(f"Saved per-image results: {os.path.join(config.dataset.test_output, 'per_image.csv')}")
+
+    # Plots of the worst images (inference again, not timed)
+    n_worst = int(cfg_plots.get('num_worst', 0))
+    if n_worst:
+        worst_dir = os.path.join(config.dataset.test_output, 'worst_plots')
+        os.makedirs(worst_dir, exist_ok=True)
+        for r in ranked[:n_worst]:
+            im0 = cv2.imread(r['Image'])
+            pred_inst, pred_cls, pred_conf, _ = infer(im0)
+            _, *gt_inst = load_gt(labels[r['Index'] - 1], *im0.shape[:2])
+            name = (f"{r['Worst rank']:03d}_FP{r['FP']}_FN{r['FN']}_IoU{r['Pixel IoU']:.3f}_"
+                    f"{os.path.splitext(os.path.basename(r['Image']))[0]}.jpg")
+            plot_prediction(im0, pred_inst, pred_cls, pred_conf, gt_inst, names, cfg_plots,
+                            os.path.join(worst_dir, name))
+        logger.info(f'Saved {min(n_worst, len(ranked))} worst-image plots to {worst_dir}')
 
     times = np.array(times)  # (n, 4) pre, model, post, mask-to-original
     total = times[:, :3].sum(1)  # deployment total: pre + model + post
@@ -348,8 +417,7 @@ def main(config, weights=None, label='Torch', half=None, extra=None):
         f'{label} Pre (ms)': p['pre_ms'],
         f'{label} Model (ms)': p['model_ms'],
         f'{label} Post (ms)': p['post_ms'],
-        f'{label} Total Avg (ms)': p['total_avg_ms'],
-        f'{label} Total P95 (ms)': p['total_p95_ms'],
+        f'{label} Total Avg (ms)': p['pre_ms'] + p['model_ms'] + p['post_ms'],  # Pre + Model + Post
         f'Box mAP50 {label}': m['box_map50'],
         f'Box mAP50-95 {label}': m['box_map50_95'],
         f'Mask mAP50 {label}': m['mask_map50'],
@@ -374,7 +442,7 @@ def main(config, weights=None, label='Torch', half=None, extra=None):
             'val.py Box P/R (best-F1 conf)': [m['box_precision_best_f1'], m['box_recall_best_f1']],
             'val.py Mask P/R (best-F1 conf)': [m['mask_precision_best_f1'], m['mask_recall_best_f1']],
             'val.py speed pre/inference/NMS (ms)': m['val_speed_ms'],
-            'P95 pre/model/post (ms)': [p['pre_p95_ms'], p['model_p95_ms'], p['post_p95_ms']],
+            'P95 pre/model/post/total (ms)': [p['pre_p95_ms'], p['model_p95_ms'], p['post_p95_ms'], p['total_p95_ms']],
             'Mask to original size avg/P95 (ms, eval only)': [p['to_original_ms'], p['to_original_p95_ms']],
             'Report wall time (s)': time.perf_counter() - t_start},
         'settings': {
@@ -403,6 +471,10 @@ def main(config, weights=None, label='Torch', half=None, extra=None):
     with open(json_path, 'w') as f:
         json.dump(result, f, indent=2)
     logger.info(f'Saved {json_path}')
+
+    summary_md = os.path.join(config.dataset.test_output, 'summary.md')
+    write_summary(summary_md, config, result)
+    logger.info(f'Saved {summary_md}')
 
     row = csv_row(config, result)
     csv_path = os.path.join(config.dataset.test_output, 'report.csv')
