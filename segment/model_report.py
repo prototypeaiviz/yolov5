@@ -1,7 +1,8 @@
-"""One report per trained YOLOv5 segmentation checkpoint: accuracy metrics and Torch timing.
+"""One report per trained YOLOv5 segmentation checkpoint: accuracy metrics and timing.
 
-All settings come from Config/main_config.yaml. Run from the repo root:
-    python segment/model_report.py
+All settings come from Config/main_config.yaml. Run from the repo root after training:
+    python segment/model_report.py          # PyTorch (.pt), columns end in "Torch"
+    python segment/model_report_onnx.py     # ONNX Runtime, columns end in "ONNX"
 
 Outputs in bin/Run_<timestamp>_<model_name>/:
     config_used.yaml
@@ -11,11 +12,11 @@ Outputs in bin/Run_<timestamp>_<model_name>/:
 
 Metric sources:
     Box/Mask mAP*, per-class Mask mAP50-95   segment/val.py at map.conf_thres (standard mAP)
-    IoU / Precision / Recall Torch            pixel-level, segment/eval_iou.py logic at pixel.conf_thres
+    IoU / Precision / Recall                  pixel-level, segment/eval_iou.py logic at pixel.conf_thres
     Instance precision / recall               greedy mask matching at pixel.match_iou, same confidence
 Timing (batch 1, per image, CUDA synchronized):
     Pre    letterbox + HWC->CHW + to device + normalize (image decoding from disk excluded)
-    Model  forward pass
+    Model  forward pass (for ONNX this includes the host/device copies done by DetectMultiBackend)
     Post   NMS + mask decoding + resize masks to the original image size
 """
 from datetime import datetime
@@ -23,6 +24,9 @@ import json
 import os
 import sys
 import time
+
+# Never let YOLOv5 pip-install missing packages into the shared environment. Must be set before utils.general loads.
+os.environ.setdefault('YOLOv5_AUTOINSTALL', 'False')
 
 import cv2
 import numpy as np
@@ -52,18 +56,35 @@ def prepare_logger(log_dir, log_filename):
     logger.add(lambda msg: print(msg, end=""))  # Keep console output
 
 
+def prepare_run(config, suffix=''):
+    """Create bin/Run_<timestamp>_<model_name><suffix>/test, save the config, start the logger."""
+    if not config.get('model_name'):  # default: the training run folder that contains weights/best.pt
+        config.model_name = os.path.basename(os.path.dirname(os.path.dirname(os.path.abspath(config.model.weights))))
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    new_run_name = f'Run_{timestamp}_{config.model_name}{suffix}'
+    checkpoints_dir = os.path.join('bin', new_run_name)
+    os.makedirs(os.path.join(checkpoints_dir, "test"), exist_ok=True)
+
+    config.dataset.save_path = checkpoints_dir
+    config.dataset.test_output = os.path.join(checkpoints_dir, "test")
+    OmegaConf.save(config, os.path.join(checkpoints_dir, "config_used.yaml"))
+
+    prepare_logger(config.dataset.test_output, 'report.log')
+    logger.info(f'Output directory: {config.dataset.test_output}')
+
+
 def sync(device):
     if device.type == 'cuda':
         torch.cuda.synchronize(device)
 
 
-def run_map(config):
+def run_map(config, weights, half):
     """Standard mAP evaluation with segment/val.py. Returns box/mask metrics and per-class mask mAP50-95."""
-    out_dir = config.dataset.test_output
     (mp_b, mr_b, map50_b, map_b, mp_m, mr_m, map50_m, map_m, *_), _, speeds, metrics = seg_val.run(
         data=config.dataset.data_yaml,
-        weights=config.model.weights,
-        batch_size=config.map.batch_size,
+        weights=weights,
+        batch_size=config.map.batch_size,  # val.py forces 1 for ONNX
         imgsz=config.model.imgsz,
         conf_thres=config.map.conf_thres,
         iou_thres=config.map.iou_thres,
@@ -71,8 +92,8 @@ def run_map(config):
         task=config.dataset.split,
         device=config.model.device,
         workers=config.map.workers,
-        half=config.model.half,
-        project=out_dir,
+        half=half,
+        project=config.dataset.test_output,
         name='val',
         exist_ok=True,
         return_metrics=True)
@@ -92,14 +113,16 @@ def run_map(config):
         'val_speed_ms': [float(v) for v in speeds]}
 
 
-def run_pixel_and_timing(config):
+def run_pixel_and_timing(config, weights, half):
     """Pixel/instance metrics at a fixed confidence, and per-image Pre/Model/Post timing at batch 1."""
     device = select_device(config.model.device)
-    half = bool(config.model.half) and device.type != 'cpu'
-    model = DetectMultiBackend(config.model.weights, device=device, data=config.dataset.data_yaml, fp16=half)
+    half = bool(half) and device.type != 'cpu'
+    model = DetectMultiBackend(weights, device=device, data=config.dataset.data_yaml, fp16=half)
     stride, names = model.stride, model.names
     imgsz = check_img_size(config.model.imgsz, s=stride)
     model.warmup(imgsz=(1, 3, imgsz, imgsz))
+    session = getattr(model, 'session', None)
+    providers = session.get_providers() if session is not None else []
 
     data = check_dataset(config.dataset.data_yaml)
     files = list_images(data[config.dataset.split])
@@ -178,50 +201,65 @@ def run_pixel_and_timing(config):
         'model_ms': float(times[:, 1].mean()),
         'post_ms': float(times[:, 2].mean()),
         'total_avg_ms': float(total.mean()),
+        'pre_p95_ms': float(np.percentile(times[:, 0], 95)),
+        'model_p95_ms': float(np.percentile(times[:, 1], 95)),
+        'post_p95_ms': float(np.percentile(times[:, 2], 95)),
         'total_p95_ms': float(np.percentile(total, 95)),
         'device': torch.cuda.get_device_name(device) if device.type == 'cuda' else 'cpu',
+        'providers': providers,
         'half': half}
 
 
-def main(config):
-    m = run_map(config)
-    names, p = run_pixel_and_timing(config)
+def main(config, weights=None, label='Torch', half=None, extra=None):
+    """Run every metric and timing for one model. `label` is the column suffix (Torch, ONNX)."""
+    weights = weights or config.model.weights
+    half = config.model.half if half is None else half
+    logger.info(f'Weights: {weights}  backend: {label}  half: {half}')
+    t_start = time.perf_counter()
+
+    m = run_map(config, weights, half)
+    names, p = run_pixel_and_timing(config, weights, half)
 
     report = {
-        'Torch Pre (ms)': p['pre_ms'],
-        'Torch Model (ms)': p['model_ms'],
-        'Torch Post (ms)': p['post_ms'],
-        'Torch Total Avg (ms)': p['total_avg_ms'],
-        'Torch Total P95 (ms)': p['total_p95_ms'],
-        'Box mAP50 Torch': m['box_map50'],
-        'Box mAP50-95 Torch': m['box_map50_95'],
-        'Mask mAP50 Torch': m['mask_map50'],
-        'Mask mAP75 Torch': m['mask_map75'],
-        'Mask mAP50-95 Torch': m['mask_map50_95'],
-        'IoU Torch': p['pixel_iou'],
-        'Precision Torch': p['pixel_precision'],
-        'Recall Torch': p['pixel_recall']}
+        f'{label} Pre (ms)': p['pre_ms'],
+        f'{label} Model (ms)': p['model_ms'],
+        f'{label} Post (ms)': p['post_ms'],
+        f'{label} Total Avg (ms)': p['total_avg_ms'],
+        f'{label} Total P95 (ms)': p['total_p95_ms'],
+        f'Box mAP50 {label}': m['box_map50'],
+        f'Box mAP50-95 {label}': m['box_map50_95'],
+        f'Mask mAP50 {label}': m['mask_map50'],
+        f'Mask mAP75 {label}': m['mask_map75'],
+        f'Mask mAP50-95 {label}': m['mask_map50_95'],
+        f'IoU {label}': p['pixel_iou'],
+        f'Precision {label}': p['pixel_precision'],
+        f'Recall {label}': p['pixel_recall']}
     present = dict(zip(m['class_index'], m['class_mask_map50_95']))
     for i, name in names.items():
-        report[f'{str(name).capitalize()} Mask mAP50-95 Torch'] = present.get(int(i), 'N/A')
+        report[f'{str(name).capitalize()} Mask mAP50-95 {label}'] = present.get(int(i), 'N/A')
 
     result = {
         'report': report,
         'extra': {
+            **(extra or {}),
             'Instance precision': p['instance_precision'],
             'Instance recall': p['instance_recall'],
             'Instance mean IoU (matched)': p['instance_mean_iou_matched'],
             'Instance TP/FP/FN': [p['tp'], p['fp'], p['fn']],
-            'Box mAP75 Torch': m['box_map75'],
+            f'Box mAP75 {label}': m['box_map75'],
             'val.py Box P/R (best-F1 conf)': [m['box_precision_best_f1'], m['box_recall_best_f1']],
             'val.py Mask P/R (best-F1 conf)': [m['mask_precision_best_f1'], m['mask_recall_best_f1']],
-            'val.py speed pre/inference/NMS (ms, batched)': m['val_speed_ms']},
+            'val.py speed pre/inference/NMS (ms)': m['val_speed_ms'],
+            'P95 pre/model/post (ms)': [p['pre_p95_ms'], p['model_p95_ms'], p['post_p95_ms']],
+            'Report wall time (s)': time.perf_counter() - t_start},
         'settings': {
-            'weights': config.model.weights,
+            'backend': label,
+            'weights': weights,
             'data': config.dataset.data_yaml,
             'split': config.dataset.split,
             'images_timed': p['images'],
             'device': p['device'],
+            'onnxruntime_providers': p['providers'],
             'half': p['half'],
             'imgsz': config.model.imgsz,
             'map_conf_thres': config.map.conf_thres,
@@ -247,24 +285,5 @@ if __name__ == '__main__':
     config = OmegaConf.load('Config/main_config.yaml')
     os.environ['CUDA_LAUNCH_BLOCKING'] = str(config.environment.cuda_launch_blocking)
 
-    # Default model name: the training run folder that contains weights/best.pt
-    if not config.get('model_name'):
-        config.model_name = os.path.basename(os.path.dirname(os.path.dirname(os.path.abspath(config.model.weights))))
-
-    # Generate timestamp and run directory
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    new_run_name = f'Run_{timestamp}_{config.model_name}'
-    checkpoints_dir = os.path.join('bin', new_run_name)
-    os.makedirs(os.path.join(checkpoints_dir, "test"), exist_ok=True)
-
-    # Update config paths
-    config.dataset.save_path = checkpoints_dir
-    config.dataset.test_output = os.path.join(checkpoints_dir, "test")
-
-    # Save the config used for this run
-    OmegaConf.save(config, os.path.join(checkpoints_dir, "config_used.yaml"))
-
-    prepare_logger(config.dataset.test_output, 'report.log')
-    logger.info(f'Weights: {config.model.weights}')
-    logger.info(f'Output directory: {config.dataset.test_output}')
+    prepare_run(config, suffix='_torch')
     main(config)

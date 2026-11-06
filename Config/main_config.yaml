@@ -36,3 +36,10 @@ pixel:               # IoU / precision / recall at a fixed confidence, and timin
 
 timing:
   warmup_images: 10  # images run before timing starts, not recorded
+
+onnx:                # segment/model_report_onnx.py only
+  weights: ""        # existing .onnx file; empty = export model.weights to ONNX next to it first
+  opset: 12          # v7.0 export default
+  simplify: false    # true needs the onnxsim package
+  half: false        # true = FP16 ONNX (needs a GPU device for export)
+  require_cuda: true # stop if ONNX Runtime falls back to CPU when a GPU is requested
