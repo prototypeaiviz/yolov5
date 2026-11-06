@@ -343,6 +343,8 @@ def run(
     # Print results
     pf = '%22s' + '%11i' * 2 + '%11.3g' * 8  # print format
     LOGGER.info(pf % ("all", seen, nt.sum(), *metrics.mean_results()))
+    if not training:
+        LOGGER.info(f'Box mAP75: {metrics.metric_box.map75:.4f}    Mask mAP75: {metrics.metric_mask.map75:.4f}')
     if nt.sum() == 0:
         LOGGER.warning(f'WARNING ⚠️ no labels found in {task} set, can not compute metrics without labels')
 
