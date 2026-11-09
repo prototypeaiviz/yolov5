@@ -5,8 +5,10 @@ Run from the repo root, for example in the background so it survives closing the
     nohup python segment/run_experiments.py > bin/experiments_nohup.log 2>&1 &
 
 Per experiment:
-    1. Skip training if <project>/<name>/weights/best.pt exists and experiments.skip_done is true.
+    1. Skip training if <project>/<name>/weights/best.pt is from a finished training and experiments.skip_done is
+       true. Finished = train.py stripped the optimizer at the end; a run that died keeps it in best.pt.
     2. An unfinished run folder with the same name is renamed to <name>_incomplete_<timestamp> (never deleted).
+       This includes a run whose last attempt failed, so its partial best.pt is never reported or skipped.
     3. Train with segment/train.py. On CUDA out of memory, retry with each batch size in experiments.oom_batch_sizes.
     4. Run the Torch report (and the ONNX report if experiments.report_onnx) on best.pt, each in its own process,
        so no GPU memory is left reserved when the next training starts.
@@ -87,14 +89,28 @@ def move_incomplete(run_dir):
         logger.warning(f'Moved unfinished run folder {run_dir} -> {new}')
 
 
+def training_finished(best):
+    """True if best.pt comes from a training that ran to the end: train.py strips the optimizer (sets it to None)
+    from best.pt only after the last epoch. A best.pt saved during training still holds the optimizer state."""
+    if not os.path.exists(best):
+        return False
+    try:
+        return torch.load(best, map_location='cpu', weights_only=False).get('optimizer') is None
+    except Exception as e:  # unreadable checkpoint (e.g. killed while saving)
+        logger.warning(f'Cannot read {best}: {e!r}')
+        return False
+
+
 def train(config, run, log_dir):
     """Train one experiment with out-of-memory retries. Return (status, batch size used, minutes)."""
     ex = config.experiments
     run_dir = os.path.join(ROOT, ex.project, run.name)
     best = os.path.join(run_dir, 'weights', 'best.pt')
-    if os.path.exists(best) and ex.skip_done:
-        logger.info(f'{run.name}: best.pt exists, training skipped')
+    if ex.skip_done and training_finished(best):
+        logger.info(f'{run.name}: finished best.pt exists, training skipped')
         return 'skipped (already trained)', '', 0.0
+    if os.path.exists(best):
+        logger.warning(f'{run.name}: best.pt is from an unfinished training, training again')
 
     t0 = time.time()
     for batch_size in [run.get('batch_size', ex.batch_size), *ex.oom_batch_sizes]:
@@ -103,7 +119,7 @@ def train(config, run, log_dir):
         logger.info(f"{run.name}: training, batch {batch_size}\n  {' '.join(cmd)}")
         code, oom = run_logged(cmd, os.path.join(log_dir, f'{run.name}_bs{batch_size}.log'))
         minutes = (time.time() - t0) / 60
-        if code == 0 and os.path.exists(best):
+        if code == 0 and training_finished(best):
             note = '' if batch_size == run.get('batch_size', ex.batch_size) else f' (out of memory, retried with batch {batch_size})'
             logger.info(f'{run.name}: training done in {minutes:.0f} min{note}')
             return f'trained{note}', batch_size, minutes
@@ -111,7 +127,9 @@ def train(config, run, log_dir):
             logger.warning(f'{run.name}: CUDA out of memory with batch {batch_size}')
             continue
         logger.error(f'{run.name}: training failed (exit code {code}), see log in {log_dir}')
+        move_incomplete(run_dir)  # a partial best.pt must not be reported or skipped as done later
         return f'failed (exit code {code})', batch_size, minutes
+    move_incomplete(run_dir)
     return 'failed (out of memory at every batch size)', '', (time.time() - t0) / 60
 
 
@@ -177,7 +195,7 @@ def main(config):
         row = {'Experiment': run.name, 'Weights': run.weights, 'Imgsz': run.get('imgsz', 640),
                'Hyp': run.get('hyp', '') or 'default', 'Extra args': run.get('extra_args', ''),
                'Status': status, 'Batch size': batch_used, 'Train minutes': round(minutes, 1)}
-        if os.path.exists(os.path.join(ROOT, ex.project, run.name, 'weights', 'best.pt')):
+        if training_finished(os.path.join(ROOT, ex.project, run.name, 'weights', 'best.pt')):
             for backend in (['torch'] if ex.report_torch else []) + (['onnx'] if ex.report_onnx else []):
                 result, out = report(config, run, backend)
                 row[f'{backend} report'] = out

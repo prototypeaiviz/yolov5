@@ -3,21 +3,21 @@
 
 # Name used in the output folder bin/Run_<timestamp>_<model_name>.
 # Leave empty to use the training run name (the folder that contains weights/best.pt).
-model_name: ""
+model_name: "yolov5n_seg_640_nomosaic"
 
 environment:
   # "1" makes every CUDA call synchronous and inflates the timing numbers. Keep "0" for timing.
   cuda_launch_blocking: "0"
 
 model:
-  weights: "BISMART/v18_yolov5n_seg_640/weights/best.pt"
+  weights: "/home/aiviz05/Projects/yolo_final/yolov5/BISMART/yolov5n_seg_640_nomosaic/weights/best.pt"  # training PC
   device: "0"        # "0" for the first GPU, "cpu" for CPU
   require_cuda: true # inspection runs on GPU: stop instead of silently running on CPU
   imgsz: 640
   half: false        # true = FP16 for metrics and timing (CUDA only)
 
 dataset:
-  data_yaml: "/media/aiviz05/Dati/DATA/BISMART/SUBSAMPLED_DATA_V18/bismart_v18.yaml"
+  data_yaml: "/media/aiviz05/Dati/DATA/BISMART/products_subsampled_jpg/bismart.yaml"  # training PC
   split: "val"
   save_path: ""      # set by the script
   test_output: ""    # set by the script
@@ -40,7 +40,7 @@ pixel:               # IoU / precision / recall at a fixed confidence, and timin
   # A pixel belongs to a mask when its mask probability is above this value (YOLOv5 default 0.5).
   # Higher = smaller masks (precision up, recall down). Used for the val.py mask mAP too. Tune with
   # segment/mask_threshold_sweep.py.
-  mask_thres: 0.5
+  mask_thres: 0.55 # best Mask mAP50-95 for n and s in the 2026-11-09 sweep (0.5 = YOLOv5 default)
 
 timing:
   warmup_images: 10  # images run before timing starts, not recorded
@@ -75,7 +75,7 @@ onnx_infer:          # segment/onnx_infer.py: stand-alone ONNX Runtime inference
   conf_thres: 0.7    # keep the same values as pixel.* for comparable results
   iou_nms: 0.45
   max_det: 1000
-  mask_thres: 0.5
+  mask_thres: 0.55 # best Mask mAP50-95 for n and s in the 2026-11-09 sweep (0.5 = YOLOv5 default)
   warmup: 10         # untimed runs before timing
   save_images: true  # predictions drawn at full resolution in images/
   alpha: 0.4
@@ -102,30 +102,24 @@ report:
   summary_csv: "bin/summary.csv"  # one row per report run (Torch and ONNX); empty = do not write
 
 experiments:         # segment/run_experiments.py: train these one after another, then report each best.pt
-  data_yaml: ""      # empty = dataset.data_yaml (same data for training and reports)
+  data_yaml: "/media/aiviz05/Dati/DATA/BISMART/products_subsampled_jpg/bismart.yaml"  # training PC; empty = dataset.data_yaml
   project: "BISMART" # train.py --project (also the W&B project name)
   epochs: 100
   batch_size: 16
-  oom_batch_sizes: [8, 4]  # retried in this order after CUDA out of memory
+  oom_batch_sizes: [8, 4, 2, 1]  # retried in this order after CUDA out of memory
   device: "0"
   workers: 8
   skip_done: true    # skip training when <project>/<name>/weights/best.pt already exists
   report_torch: true
   report_onnx: false
   runs:              # per run: name, weights, imgsz, hyp ("" = default), optional cfg (model yaml), epochs, batch_size, extra_args
-    - {name: v18_yolov5n_seg_640, weights: yolov5n-seg.pt, imgsz: 640, hyp: ""}
-    - {name: v18_yolov5n_seg_640_nomosaic, weights: yolov5n-seg.pt, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml}
-    - {name: v18_yolov5s_seg_640, weights: yolov5s-seg.pt, imgsz: 640, hyp: ""}
-    - {name: v18_yolov5s_seg_640_nomosaic, weights: yolov5s-seg.pt, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml}
-    - {name: v18_yolov5n_seg_640_nomosaic_maskratio1, weights: yolov5n-seg.pt, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml, extra_args: "--mask-ratio 1"}
-    - {name: v18_yolov5n_seg_960_nomosaic, weights: yolov5n-seg.pt, imgsz: 960, hyp: data/hyps/hyp.bismart.yaml, batch_size: 8}
-    # Each new run changes one thing against a finished run, so the effect is measurable.
-    # --rect: batches as tall as the wide strips need (no square padding), much less memory. Disables mosaic and shuffle.
-    # --no-overlap: one label mask per pill instead of one merged mask image (touching pills keep their edge pixels).
-    - {name: v18_yolov5n_seg_640_nomosaic_nooverlap, weights: yolov5n-seg.pt, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml, extra_args: "--no-overlap"}
-    # proto2x: mask prototypes at stride 2 (320x320 at 640) instead of 4, backbone unchanged -> finer masks, small speed cost.
-    - {name: v18_yolov5n_seg_640_nomosaic_proto2x, weights: yolov5n-seg.pt, cfg: models/segment/yolov5n-seg-proto2x.yaml, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml, extra_args: "--mask-ratio 2"}
-    - {name: v18_yolov5s_seg_640_nomosaic_proto2x, weights: yolov5s-seg.pt, cfg: models/segment/yolov5s-seg-proto2x.yaml, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml, extra_args: "--mask-ratio 2"}
-    - {name: v18_yolov5n_seg_960_rect, weights: yolov5n-seg.pt, imgsz: 960, hyp: data/hyps/hyp.bismart.yaml, batch_size: 8, extra_args: "--rect"}
-    - {name: v18_yolov5n_seg_1280_rect, weights: yolov5n-seg.pt, imgsz: 1280, hyp: data/hyps/hyp.bismart.yaml, batch_size: 8, extra_args: "--rect"}
-    - {name: v18_yolov5s_seg_1280_rect, weights: yolov5s-seg.pt, imgsz: 1280, hyp: data/hyps/hyp.bismart.yaml, batch_size: 8, extra_args: "--rect"}
+    # Only the runs still to train. Finished runs (n/s 640, nomosaic, maskratio1, nooverlap, 960, rect) were removed;
+    # their results are in results/final_results. Compare each new run with v18_yolov5s_seg_640_nomosaic /
+    # v18_yolov5n_seg_640_nomosaic (same hyp.bismart settings, 640, no mosaic).
+    # proto2x: mask prototypes at stride 2 (320x320 at 640) instead of 4. hyp.bismart.proto2x.yaml = hyp.bismart.yaml
+    # + mask_max 64 (mask loss limit, the first proto2x runs ran out of GPU memory). m proto2x uses batch 8: batch 16
+    # needs about 9.5 GB in the laptop memory test.
+    - {name: v18_yolov5s_seg_640_nomosaic_proto2x, weights: yolov5s-seg.pt, cfg: models/segment/yolov5s-seg-proto2x.yaml, imgsz: 640, hyp: data/hyps/hyp.bismart.proto2x.yaml, extra_args: "--mask-ratio 2"}
+    - {name: v18_yolov5m_seg_640_nomosaic, weights: yolov5m-seg.pt, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml}
+    - {name: v18_yolov5m_seg_640_nomosaic_proto2x, weights: yolov5m-seg.pt, cfg: models/segment/yolov5m-seg-proto2x.yaml, imgsz: 640, hyp: data/hyps/hyp.bismart.proto2x.yaml, batch_size: 8, extra_args: "--mask-ratio 2"}
+    - {name: v18_yolov5n_seg_640_nomosaic_proto2x, weights: yolov5n-seg.pt, cfg: models/segment/yolov5n-seg-proto2x.yaml, imgsz: 640, hyp: data/hyps/hyp.bismart.proto2x.yaml, extra_args: "--mask-ratio 2"}

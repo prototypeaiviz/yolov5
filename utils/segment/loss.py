@@ -40,6 +40,10 @@ class ComputeLoss:
         self.nm = m.nm  # number of masks
         self.anchors = m.anchors
         self.device = device
+        # At most this many matched predictions per image and detection layer get a mask loss (0 = all, the YOLOv5
+        # default). Each one builds a full prototype-size mask (320x320 with proto2x), so images with 100+ pills ran
+        # out of GPU memory. A random subset keeps the loss unbiased (same idea as YOLACT masks_to_train).
+        self.mask_max = int(h.get('mask_max', 0))
 
     def __call__(self, preds, targets, masks):  # predictions, targets, model
         p, proto = preds
@@ -88,6 +92,9 @@ class ComputeLoss:
                 mxyxy = xywh2xyxy(xywhn[i] * torch.tensor([mask_w, mask_h, mask_w, mask_h], device=self.device))
                 for bi in b.unique():
                     j = b == bi  # matching index
+                    if self.mask_max and int(j.sum()) > self.mask_max:  # random subset, see self.mask_max
+                        idx = j.nonzero().squeeze(1)
+                        j = idx[torch.randperm(idx.numel(), device=idx.device)[:self.mask_max]]
                     if self.overlap:
                         mask_gti = torch.where(masks[bi][None] == tidxs[i][j].view(-1, 1, 1), 1.0, 0.0)
                     else:
