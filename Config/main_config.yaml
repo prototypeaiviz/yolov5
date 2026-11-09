@@ -60,6 +60,12 @@ plots:               # segment/model_report.py prediction images at full resolut
   gt_color: [0, 255, 0]  # label outline color, BGR
   show_conf: false   # write class and confidence next to each prediction
 
+trt_compare:         # segment/trt_compare.py: Python reference json for the C++ TensorRT YoloV5Seg (--python-output)
+  weights: "results/v18_yolov5_results_of_models/v18_yolov5s_seg_640/weights/best.pt"
+  images: "/media/mostafahaggag/D/Data/bismart/products_subsampled_jpg/images/val"
+  imgsz: 640         # ONNX / TensorRT input size (square)
+  num_images: 0      # 0 = all
+
 onnx_infer:          # segment/onnx_infer.py: stand-alone ONNX Runtime inference (numpy + OpenCV pre/post only)
   weights: "results/v18_yolov5_results_of_models/v18_yolov5s_seg_640/weights/best.onnx"  # from export.py
   images: "/media/mostafahaggag/D/Data/bismart/products_subsampled_jpg/images/val"  # folder of images
