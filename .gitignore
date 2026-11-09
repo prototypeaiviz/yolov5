@@ -258,3 +258,8 @@ fabric.properties
 # BISMART outputs
 /BISMART/
 /bin/
+
+# BISMART local outputs (copied models, reports, Excel sheets, TensorBoard logs)
+/results/
+events.out.tfevents.*
+*.xlsx

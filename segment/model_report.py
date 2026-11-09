@@ -108,7 +108,8 @@ def run_map(config, weights, half):
         name='val',
         exist_ok=True,
         return_metrics=True,
-        upsample_masks=config.pixel.get('mask_mode', 'crop_then_upsample') == 'upsample_then_crop')
+        upsample_masks=config.pixel.get('mask_mode', 'crop_then_upsample') == 'upsample_then_crop',
+        mask_thres=float(config.pixel.get('mask_thres', 0.5)))
     return {
         'box_map50': float(map50_b),
         'box_map50_95': float(map_b),
@@ -212,7 +213,7 @@ def write_summary(path, config, result):
              f"- Weights: {st['weights']}",
              f"- Data: {st['data']}  split {st['split']}, {st['images_timed']} images",
              f"- Confidence: mAP {st['map_conf_thres']}, IoU/Precision/Recall {st['pixel_conf_thres']}, "
-             f"mask_mode {st['mask_mode']}",
+             f"mask_mode {st['mask_mode']}, mask threshold {st.get('mask_thres', 0.5)}",
              '', '## Report', '', '| Column | Value |', '|---|---|']
     lines += [f'| {k} | {fmt(v)} |' for k, v in result['report'].items()]
     lines += ['', '## Extra', '', '| Item | Value |', '|---|---|']
@@ -242,6 +243,23 @@ def append_summary(path, row):
     write_csv(path, rows + [row])
 
 
+def make_mask_decoder(config):
+    """Mask decoding function from pixel.mask_mode and pixel.mask_thres: (protos, coefficients, boxes, shape) -> masks
+    at network input size."""
+    mask_mode = config.pixel.get('mask_mode', 'crop_then_upsample')
+    mask_thres = float(config.pixel.get('mask_thres', 0.5))
+    if mask_mode == 'upsample_then_crop':  # upsample masks to input size, then cut at the box: smoother edges
+        def decode_masks(protos, masks_in, bboxes, shape):
+            return process_mask_upsample(protos, masks_in, bboxes, shape, thres=mask_thres)
+    elif mask_mode == 'crop_then_upsample':  # cut at the box on the 160x160 grid, then upsample (YOLOv5 predict.py)
+        def decode_masks(protos, masks_in, bboxes, shape):
+            return process_mask(protos, masks_in, bboxes, shape, upsample=True, thres=mask_thres)
+    else:
+        raise SystemExit(f'Unknown pixel.mask_mode "{mask_mode}", use upsample_then_crop or crop_then_upsample')
+    logger.info(f'Mask post-processing: {mask_mode}, mask threshold {mask_thres}')
+    return decode_masks
+
+
 def run_pixel_and_timing(config, weights, half):
     """Pixel/instance metrics at a fixed confidence, and per-image Pre/Model/Post timing at batch 1."""
     device = select_device(config.model.device)
@@ -261,15 +279,7 @@ def run_pixel_and_timing(config, weights, half):
     classes = list(range(len(names)))
     pc = config.pixel
 
-    mask_mode = config.pixel.get('mask_mode', 'crop_then_upsample')
-    if mask_mode == 'upsample_then_crop':  # upsample masks to input size, then cut at the box: smoother edges
-        decode_masks = process_mask_upsample
-    elif mask_mode == 'crop_then_upsample':  # cut at the box on the 160x160 grid, then upsample (YOLOv5 predict.py)
-        def decode_masks(protos, masks_in, bboxes, shape):
-            return process_mask(protos, masks_in, bboxes, shape, upsample=True)
-    else:
-        raise SystemExit(f'Unknown pixel.mask_mode "{mask_mode}", use upsample_then_crop or crop_then_upsample')
-    logger.info(f'Mask post-processing: {mask_mode}')
+    decode_masks = make_mask_decoder(config)
 
     def infer(im0):
         """Run one image. Return (boxes, cropped masks) at original size, classes, confidences and stage times in ms:
@@ -473,6 +483,7 @@ def main(config, weights=None, label='Torch', half=None, extra=None):
             'map_conf_thres': config.map.conf_thres,
             'pixel_conf_thres': config.pixel.conf_thres,
             'mask_mode': config.pixel.get('mask_mode', 'crop_then_upsample'),
+            'mask_thres': float(config.pixel.get('mask_thres', 0.5)),
             'match_iou': config.pixel.match_iou}}
 
     logger.info('Report')

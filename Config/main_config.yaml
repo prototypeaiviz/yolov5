@@ -29,14 +29,18 @@ map:                 # segment/val.py settings (standard mAP evaluation)
   workers: 8
 
 pixel:               # IoU / precision / recall at a fixed confidence, and timing
-  conf_thres: 0.25
+  conf_thres: 0.7    # same value for every report (all results so far use 0.7)
   iou_nms: 0.45
   match_iou: 0.5
   max_det: 1000
-  # How predicted masks are built (IoU/Precision/Recall, timing, pred_plots; val.py mAP is not affected):
+  # How predicted masks are built (IoU/Precision/Recall, timing, pred_plots and the val.py mask mAP):
   #   upsample_then_crop: upsample to 640 first, then cut at the box -> smoother edges and corners
   #   crop_then_upsample: cut at the box on the 160x160 grid, then upsample (old behaviour, YOLOv5 predict.py)
   mask_mode: upsample_then_crop
+  # A pixel belongs to a mask when its mask probability is above this value (YOLOv5 default 0.5).
+  # Higher = smaller masks (precision up, recall down). Used for the val.py mask mAP too. Tune with
+  # segment/mask_threshold_sweep.py.
+  mask_thres: 0.5
 
 timing:
   warmup_images: 10  # images run before timing starts, not recorded
@@ -55,6 +59,38 @@ plots:               # segment/model_report.py prediction images at full resolut
   draw_gt: true      # draw label outlines for comparison
   gt_color: [0, 255, 0]  # label outline color, BGR
   show_conf: false   # write class and confidence next to each prediction
+
+onnx_infer:          # segment/onnx_infer.py: stand-alone ONNX Runtime inference (numpy + OpenCV pre/post only)
+  weights: "results/v18_yolov5_results_of_models/v18_yolov5s_seg_640/weights/best.onnx"  # from export.py
+  images: "/media/mostafahaggag/D/Data/bismart/products_subsampled_jpg/images/val"  # folder of images
+  num_images: 0      # 0 = all
+  device: "0"        # "0" = CUDAExecutionProvider, "cpu" = CPU
+  require_cuda: true # stop if ONNX Runtime falls back to CPU
+  conf_thres: 0.7    # keep the same values as pixel.* for comparable results
+  iou_nms: 0.45
+  max_det: 1000
+  mask_thres: 0.5
+  warmup: 10         # untimed runs before timing
+  save_images: true  # predictions drawn at full resolution in images/
+  alpha: 0.4
+  show_conf: false
+
+compare_plots:       # segment/compare_plots.py: GT (left) | prediction (right) at full resolution, every val image
+                     # (uses model, dataset.split, pixel and plots settings above)
+  weights: "results/v18_yolov5_results_of_models/v18_yolov5s_seg_640/weights/best.pt"  # empty = model.weights
+  data_yaml: "/media/mostafahaggag/D/Data/bismart/products_subsampled_jpg/bismart_laptop.yaml"  # empty = dataset.data_yaml
+  num_images: 0      # 0 = all images of the split, N = first N
+  gap: 20            # white gap between the two panels, pixels
+  gt_outline_on_pred: false # true = also draw the label outlines (green) on the prediction panel
+
+mask_sweep:          # segment/mask_threshold_sweep.py: full report (map, pixel, plots settings above)
+                     # once per model and mask threshold, one row each in mask_sweep.csv / .tsv
+  models:            # best.pt files to test; empty = model.weights
+    - results/v18_yolov5_results_of_models/v18_yolov5n_seg_640_nomosaic/weights/best.pt
+    - results/v18_yolov5_results_of_models/v18_yolov5s_seg_640/weights/best.pt
+  data_yaml: "/media/mostafahaggag/D/Data/bismart/products_subsampled_jpg/bismart_laptop.yaml"  # empty = dataset.data_yaml
+  thresholds: [0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7]
+  plots: false       # true = pred_plots / worst_plots for every threshold (slow); false = no plots
 
 report:
   summary_csv: "bin/summary.csv"  # one row per report run (Torch and ONNX); empty = do not write

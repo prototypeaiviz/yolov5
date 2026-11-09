@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import sys
+from functools import partial
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
 
@@ -159,13 +160,14 @@ def run(
         callbacks=Callbacks(),
         return_metrics=False,  # also return the Metrics object (per-class AP, mAP75)
         upsample_masks=False,  # mask metrics on masks upsampled to input size before box crop (model_report.py)
+        mask_thres=0.5,  # mask probability threshold (a pixel belongs to the mask above it)
 ):
     if save_json:
         check_requirements(['pycocotools'])
     if save_json or upsample_masks:
-        process = process_mask_upsample  # more accurate
+        process = partial(process_mask_upsample, thres=mask_thres)  # more accurate
     else:
-        process = process_mask  # faster
+        process = partial(process_mask, thres=mask_thres)  # faster
 
     # Initialize/load model and set device
     training = model is not None

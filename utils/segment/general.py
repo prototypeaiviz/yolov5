@@ -22,7 +22,7 @@ def crop_mask(masks, boxes):
     return masks * ((r >= x1) * (r < x2) * (c >= y1) * (c < y2))
 
 
-def process_mask_upsample(protos, masks_in, bboxes, shape):
+def process_mask_upsample(protos, masks_in, bboxes, shape, thres=0.5):
     """
     Crop after upsample.
     proto_out: [mask_dim, mask_h, mask_w]
@@ -37,10 +37,10 @@ def process_mask_upsample(protos, masks_in, bboxes, shape):
     masks = (masks_in @ protos.float().view(c, -1)).sigmoid().view(-1, mh, mw)
     masks = F.interpolate(masks[None], shape, mode='bilinear', align_corners=False)[0]  # CHW
     masks = crop_mask(masks, bboxes)  # CHW
-    return masks.gt_(0.5)
+    return masks.gt_(thres)  # mask probability threshold
 
 
-def process_mask(protos, masks_in, bboxes, shape, upsample=False):
+def process_mask(protos, masks_in, bboxes, shape, upsample=False, thres=0.5):
     """
     Crop before upsample.
     proto_out: [mask_dim, mask_h, mask_w]
@@ -64,7 +64,7 @@ def process_mask(protos, masks_in, bboxes, shape, upsample=False):
     masks = crop_mask(masks, downsampled_bboxes)  # CHW
     if upsample:
         masks = F.interpolate(masks[None], shape, mode='bilinear', align_corners=False)[0]  # CHW
-    return masks.gt_(0.5)
+    return masks.gt_(thres)  # mask probability threshold
 
 
 def scale_image(im1_shape, masks, im0_shape, ratio_pad=None):
