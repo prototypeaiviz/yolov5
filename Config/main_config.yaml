@@ -92,10 +92,10 @@ compare_plots:       # segment/compare_plots.py: GT (left) | prediction (right) 
 mask_sweep:          # segment/mask_threshold_sweep.py: full report (map, pixel, plots settings above)
                      # once per model and mask threshold, one row each in mask_sweep.csv / .tsv
   models:            # best.pt files to test; empty = model.weights
-    - results/v18_yolov5_results_of_models/v18_yolov5n_seg_640_nomosaic/weights/best.pt
-    - results/v18_yolov5_results_of_models/v18_yolov5s_seg_640/weights/best.pt
+    - /media/mostafahaggag/D/Data/Results_yolo/v18_yolov5_9_11/v18_yolov5s_seg_640_nomosaic_proto2x/weights/best.pt
+    - /media/mostafahaggag/D/Data/Results_yolo/v18_yolov5_9_11/v18_yolov5m_seg_640_nomosaic_proto2x/weights/best.pt
   data_yaml: "/media/mostafahaggag/D/Data/bismart/products_subsampled_jpg/bismart_laptop.yaml"  # empty = dataset.data_yaml
-  thresholds: [0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7]
+  thresholds: [0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8]
   plots: false       # true = pred_plots / worst_plots for every threshold (slow); false = no plots
 
 report:
@@ -113,13 +113,10 @@ experiments:         # segment/run_experiments.py: train these one after another
   report_torch: true
   report_onnx: false
   runs:              # per run: name, weights, imgsz, hyp ("" = default), optional cfg (model yaml), epochs, batch_size, extra_args
-    # Only the runs still to train. Finished runs (n/s 640, nomosaic, maskratio1, nooverlap, 960, rect) were removed;
-    # their results are in results/final_results. Compare each new run with v18_yolov5s_seg_640_nomosaic /
-    # v18_yolov5n_seg_640_nomosaic (same hyp.bismart settings, 640, no mosaic).
-    # proto2x: mask prototypes at stride 2 (320x320 at 640) instead of 4. hyp.bismart.proto2x.yaml = hyp.bismart.yaml
-    # + mask_max 64 (mask loss limit, the first proto2x runs ran out of GPU memory). m proto2x uses batch 8: batch 16
-    # needs about 9.5 GB in the laptop memory test.
-    - {name: v18_yolov5s_seg_640_nomosaic_proto2x, weights: yolov5s-seg.pt, cfg: models/segment/yolov5s-seg-proto2x.yaml, imgsz: 640, hyp: data/hyps/hyp.bismart.proto2x.yaml, extra_args: "--mask-ratio 2"}
-    - {name: v18_yolov5m_seg_640_nomosaic, weights: yolov5m-seg.pt, imgsz: 640, hyp: data/hyps/hyp.bismart.yaml}
-    - {name: v18_yolov5m_seg_640_nomosaic_proto2x, weights: yolov5m-seg.pt, cfg: models/segment/yolov5m-seg-proto2x.yaml, imgsz: 640, hyp: data/hyps/hyp.bismart.proto2x.yaml, batch_size: 8, extra_args: "--mask-ratio 2"}
-    - {name: v18_yolov5n_seg_640_nomosaic_proto2x, weights: yolov5n-seg.pt, cfg: models/segment/yolov5n-seg-proto2x.yaml, imgsz: 640, hyp: data/hyps/hyp.bismart.proto2x.yaml, extra_args: "--mask-ratio 2"}
+    # Experiment set 2026-11-10: proto2x trained longer. The 100-epoch proto2x runs were still improving at the end
+    # (best epoch: s 96, n 98, m 75 of 100). Same settings, only epochs 200 -> compare with the *_proto2x 100-epoch runs
+    # (Results_yolo/v18_yolov5_9_11). Reports use pixel.mask_thres 0.55 like those runs; sweep afterwards (best 0.65).
+    # Estimated on the 3080: s about 2.5 h, m about 2.5 h (batch 8), n about 1.5 h.
+    - {name: v18_yolov5s_seg_640_nomosaic_proto2x_e200, weights: yolov5s-seg.pt, cfg: models/segment/yolov5s-seg-proto2x.yaml, imgsz: 640, epochs: 200, hyp: data/hyps/hyp.bismart.proto2x.yaml, extra_args: "--mask-ratio 2"}
+    - {name: v18_yolov5m_seg_640_nomosaic_proto2x_e200, weights: yolov5m-seg.pt, cfg: models/segment/yolov5m-seg-proto2x.yaml, imgsz: 640, epochs: 200, hyp: data/hyps/hyp.bismart.proto2x.yaml, batch_size: 8, extra_args: "--mask-ratio 2"}
+    - {name: v18_yolov5n_seg_640_nomosaic_proto2x_e200, weights: yolov5n-seg.pt, cfg: models/segment/yolov5n-seg-proto2x.yaml, imgsz: 640, epochs: 200, hyp: data/hyps/hyp.bismart.proto2x.yaml, extra_args: "--mask-ratio 2"}
