@@ -835,14 +835,22 @@ class Proto(nn.Module):
     # YOLOv5 mask Proto module for segmentation models
     def __init__(self, c1, c_=256, c2=32, up=1):  # ch_in, number of protos, number of masks, extra upsampling
         super().__init__()
-        assert up in (1, 2), f'Proto up must be 1 or 2, got {up}'
+        assert up in (1, 2, 'resize_dw'), f"Proto up must be 1, 2 or 'resize_dw', got {up}"
         self.cv1 = Conv(c1, c_, k=3)
         self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
         self.cv2 = Conv(c_, c_, k=3)
-        # up=2: extra learned 2x upsample (2x2 transposed conv, as in the Mask R-CNN mask head), so the prototype
-        # masks are at stride 2 (320x320 at 640 input) instead of stride 4 (160x160). Train with --mask-ratio 2.
-        self.up2 = nn.Sequential(nn.ConvTranspose2d(c_, c_, 2, 2, bias=False), nn.BatchNorm2d(c_),
-                                 nn.SiLU()) if up == 2 else None
+        # Extra 2x upsample, so the prototype masks are at stride 2 (320x320 at 640 input) instead of stride 4
+        # (160x160). Train with --mask-ratio 2.
+        #   up=2          : learned 2x2 transposed conv, stride 2 (as in the Mask R-CNN mask head)
+        #   up='resize_dw': bilinear 2x upsample + depthwise 3x3 conv (+BN+SiLU); cv3 (1x1) then mixes the channels,
+        #                   so together a depthwise-separable conv on the smooth upsampled features
+        if up == 2:
+            self.up2 = nn.Sequential(nn.ConvTranspose2d(c_, c_, 2, 2, bias=False), nn.BatchNorm2d(c_), nn.SiLU())
+        elif up == 'resize_dw':
+            self.up2 = nn.Sequential(nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+                                     Conv(c_, c_, k=3, g=c_))
+        else:
+            self.up2 = None
         self.cv3 = Conv(c_, c2)
 
     def forward(self, x):

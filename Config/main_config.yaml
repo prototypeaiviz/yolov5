@@ -112,11 +112,23 @@ experiments:         # segment/run_experiments.py: train these one after another
   skip_done: true    # skip training when <project>/<name>/weights/best.pt already exists
   report_torch: true
   report_onnx: false
-  runs:              # per run: name, weights, imgsz, hyp ("" = default), optional cfg (model yaml), epochs, batch_size, extra_args
-    # Experiment set 2026-11-10: proto2x trained longer. The 100-epoch proto2x runs were still improving at the end
-    # (best epoch: s 96, n 98, m 75 of 100). Same settings, only epochs 200 -> compare with the *_proto2x 100-epoch runs
-    # (Results_yolo/v18_yolov5_9_11). Reports use pixel.mask_thres 0.55 like those runs; sweep afterwards (best 0.65).
-    # Estimated on the 3080: s about 2.5 h, m about 2.5 h (batch 8), n about 1.5 h.
-    - {name: v18_yolov5s_seg_640_nomosaic_proto2x_e200, weights: yolov5s-seg.pt, cfg: models/segment/yolov5s-seg-proto2x.yaml, imgsz: 640, epochs: 200, hyp: data/hyps/hyp.bismart.proto2x.yaml, extra_args: "--mask-ratio 2"}
-    - {name: v18_yolov5m_seg_640_nomosaic_proto2x_e200, weights: yolov5m-seg.pt, cfg: models/segment/yolov5m-seg-proto2x.yaml, imgsz: 640, epochs: 200, hyp: data/hyps/hyp.bismart.proto2x.yaml, batch_size: 8, extra_args: "--mask-ratio 2"}
-    - {name: v18_yolov5n_seg_640_nomosaic_proto2x_e200, weights: yolov5n-seg.pt, cfg: models/segment/yolov5n-seg-proto2x.yaml, imgsz: 640, epochs: 200, hyp: data/hyps/hyp.bismart.proto2x.yaml, extra_args: "--mask-ratio 2"}
+  runs:              # per run: name, weights, imgsz, hyp ("" = default), optional cfg (model yaml), epochs, batch_size, oom_batch_sizes, extra_args
+    # Experiment set 2026-11-11: plain yolov5n/s-seg, no mosaic (hyp.bismart.yaml), 100 epochs = the
+    # v18_yolov5{n,s}_seg_640_nomosaic runs (640, batch 16), changing one thing each. Compare with those runs.
+    #   lower resolution: 512 and 416; faster inference, smaller pills on the input
+    #   larger batch: 32. YOLOv5 accumulates gradients up to a nominal batch of 64 (train.py nbs), so batch 16 and 32
+    #   make the same optimizer steps; only BatchNorm statistics and speed change. Batch 32 does not fit at 640
+    #   (laptop memory test: s 640 batch 16 already 6.7 GB), so it is tested at 416, against the 416 batch 16 runs.
+    #   oom_batch_sizes [] = fail instead of silently training with a smaller batch.
+    # Estimated on the 3080: about 2.5 h in total.
+    - {name: v18_yolov5s_seg_512_nomosaic, weights: yolov5s-seg.pt, imgsz: 512, hyp: data/hyps/hyp.bismart.yaml}
+    - {name: v18_yolov5n_seg_512_nomosaic, weights: yolov5n-seg.pt, imgsz: 512, hyp: data/hyps/hyp.bismart.yaml}
+    - {name: v18_yolov5s_seg_416_nomosaic, weights: yolov5s-seg.pt, imgsz: 416, hyp: data/hyps/hyp.bismart.yaml}
+    - {name: v18_yolov5n_seg_416_nomosaic, weights: yolov5n-seg.pt, imgsz: 416, hyp: data/hyps/hyp.bismart.yaml}
+    - {name: v18_yolov5s_seg_416_nomosaic_bs32, weights: yolov5s-seg.pt, imgsz: 416, batch_size: 32, oom_batch_sizes: [], hyp: data/hyps/hyp.bismart.yaml}
+    - {name: v18_yolov5n_seg_416_nomosaic_bs32, weights: yolov5n-seg.pt, imgsz: 416, batch_size: 32, oom_batch_sizes: [], hyp: data/hyps/hyp.bismart.yaml}
+    # To test later (not in the queue yet): mask prototypes at stride 2 with bilinear upsample + depthwise 3x3 conv
+    # (Proto up='resize_dw', models/segment/yolov5{n,s,m}-seg-proto2x-dw.yaml). Compare with the transposed-conv
+    # version (*-proto2x.yaml) with the same settings. Uncomment to add to the queue.
+    # - {name: v18_yolov5s_seg_640_nomosaic_proto2x_dw_e200, weights: yolov5s-seg.pt, cfg: models/segment/yolov5s-seg-proto2x-dw.yaml, imgsz: 640, epochs: 200, hyp: data/hyps/hyp.bismart.proto2x.yaml, extra_args: "--mask-ratio 2"}
+    # - {name: v18_yolov5n_seg_640_nomosaic_proto2x_dw_e200, weights: yolov5n-seg.pt, cfg: models/segment/yolov5n-seg-proto2x-dw.yaml, imgsz: 640, epochs: 200, hyp: data/hyps/hyp.bismart.proto2x.yaml, extra_args: "--mask-ratio 2"}

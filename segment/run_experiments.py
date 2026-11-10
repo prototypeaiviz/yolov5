@@ -113,7 +113,9 @@ def train(config, run, log_dir):
         logger.warning(f'{run.name}: best.pt is from an unfinished training, training again')
 
     t0 = time.time()
-    for batch_size in [run.get('batch_size', ex.batch_size), *ex.oom_batch_sizes]:
+    # per-run oom_batch_sizes overrides the global list; [] = no retry (a batch size experiment must not silently
+    # fall back to a smaller batch)
+    for batch_size in [run.get('batch_size', ex.batch_size), *run.get('oom_batch_sizes', ex.oom_batch_sizes)]:
         move_incomplete(run_dir)
         cmd = train_command(config, run, batch_size)
         logger.info(f"{run.name}: training, batch {batch_size}\n  {' '.join(cmd)}")
