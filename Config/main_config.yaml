@@ -98,6 +98,37 @@ mask_sweep:          # segment/mask_threshold_sweep.py: full report (map, pixel,
   thresholds: [0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8]
   plots: false       # true = pred_plots / worst_plots for every threshold (slow); false = no plots
 
+registry:            # segment/experiment_registry.py: one results-sheet row per training run (configuration,
+                     # training time, Torch report, C++ TensorRT result_row.json) -> bin/Run_<ts>_registry/registry.xlsx
+  train_runs:        # training run folders (train.py output with opt.yaml), glob patterns
+    - /media/mostafahaggag/D/Data/Results_yolo/v18_yolov5_9_11/*
+    - /media/mostafahaggag/D/Data/Results_yolo/results_10_11/v18_yolov5_results10_11/*
+    - /media/mostafahaggag/D/Data/Results_yolo/results_11_11/v18_yolov5_late_night/*
+    - results/v18_yolov5_results_of_models/*
+  report_runs:       # segment/model_report.py output folders (newest report of each run is used), glob patterns
+    - /media/mostafahaggag/D/Data/Results_yolo/Run_20261109_results/Run_*_torch
+    - /media/mostafahaggag/D/Data/Results_yolo/results_11_11/Run_2026111_late_night/Run_*_torch
+    - results/final_results/Run_*_torch
+  runner_logs:       # segment/run_experiments.py output folders (experiments.csv: status, train minutes)
+    - /media/mostafahaggag/D/Data/Results_yolo/results_11_11/Run_2026111_late_night/Run_*_experiments
+    - results/final_results/Run_*_experiments
+  trt_runs:          # C++ TensorRT evaluation folders with result_row.json (copy them from each test machine)
+    - /media/mostafahaggag/D/Projects_cpp/edu_cpp/TensorRT/bin/Run_*_eval
+  defaults:          # sheet columns that are the same for every run (edit here)
+    Testing Data: "Advantech India"
+    Split: "Val"
+    Model: "YOLOv5-seg"
+    Scope: "Product only"
+    Owner: "Mostafa Haggag"
+    Status: "Done"
+    Run Type: "New training"
+    Annotation_Type: "Instance mask"
+    Platform: "Ultralytics YOLOv5"
+    Weights: "CoCo pretrained"
+    Dataset Version: "v17"
+    Number of Classes: 1
+    Is TRT Compatible?: "Yes"
+
 report:
   summary_csv: "bin/summary.csv"  # one row per report run (Torch and ONNX); empty = do not write
 

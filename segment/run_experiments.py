@@ -20,9 +20,11 @@ Outputs in bin/Run_<timestamp>_experiments/:
 Each report also appends to report.summary_csv and has its own bin/Run_<timestamp>_<name>_torch folder.
 """
 from datetime import datetime
+import json
 import multiprocessing as mp
 import os
 import queue as queue_module
+import socket
 import subprocess
 import sys
 import time
@@ -101,6 +103,22 @@ def training_finished(best):
         return False
 
 
+def write_runner_info(run_dir, run, t_start, total_minutes, batch_size, note):
+    """<run_dir>/runner_info.json: training time and machine, read by segment/experiment_registry.py."""
+    end = time.time()
+    info = {'name': run.name,
+            'start': datetime.fromtimestamp(t_start).isoformat(timespec='seconds'),
+            'end': datetime.fromtimestamp(end).isoformat(timespec='seconds'),
+            'train_hours': round((end - t_start) / 3600, 3),  # successful attempt only
+            'total_minutes_incl_retries': round(total_minutes, 1),
+            'batch_size': batch_size,
+            'note': note.strip(' ()'),
+            'host': socket.gethostname(),
+            'gpu': torch.cuda.get_device_name(0) if torch.cuda.is_available() else ''}
+    with open(os.path.join(run_dir, 'runner_info.json'), 'w') as f:
+        json.dump(info, f, indent=2)
+
+
 def train(config, run, log_dir):
     """Train one experiment with out-of-memory retries. Return (status, batch size used, minutes)."""
     ex = config.experiments
@@ -119,11 +137,13 @@ def train(config, run, log_dir):
         move_incomplete(run_dir)
         cmd = train_command(config, run, batch_size)
         logger.info(f"{run.name}: training, batch {batch_size}\n  {' '.join(cmd)}")
+        t_attempt = time.time()
         code, oom = run_logged(cmd, os.path.join(log_dir, f'{run.name}_bs{batch_size}.log'))
         minutes = (time.time() - t0) / 60
         if code == 0 and training_finished(best):
             note = '' if batch_size == run.get('batch_size', ex.batch_size) else f' (out of memory, retried with batch {batch_size})'
             logger.info(f'{run.name}: training done in {minutes:.0f} min{note}')
+            write_runner_info(run_dir, run, t_attempt, minutes, batch_size, note)
             return f'trained{note}', batch_size, minutes
         if oom:
             logger.warning(f'{run.name}: CUDA out of memory with batch {batch_size}')
