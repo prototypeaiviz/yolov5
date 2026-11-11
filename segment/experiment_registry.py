@@ -80,7 +80,37 @@ def proto_description(cfg_name, imgsz):
     return f'standard prototypes ({imgsz // 4}x{imgsz // 4})'
 
 
-def train_time(run_dir, runner_rows):
+EPOCHS_DONE = re.compile(r'(\d+) epochs completed in ([0-9.]+) hours')
+
+
+def train_log_hours(name, train_logs):
+    """Hours printed by train.py at the end of training ('N epochs completed in H hours') in the runner's
+    training log <name>_bs<batch>.log; None if no finished log is found."""
+    hours = None
+    for log in train_logs.get(name, []):
+        with open(log, errors='ignore') as f:
+            m = EPOCHS_DONE.findall(f.read())
+        if m:
+            hours = float(m[-1][1])
+    return hours
+
+
+def events_hours(run_dir):
+    """Training duration from the TensorBoard events file (first to last logged event, one per epoch); None if
+    the file or the tensorboard package is missing."""
+    events = glob.glob(os.path.join(run_dir, 'events.out.tfevents.*'))
+    if not events:
+        return None
+    try:
+        from tensorboard.backend.event_processing.event_file_loader import EventFileLoader
+        times = [e.wall_time for e in EventFileLoader(events[0]).Load()]
+    except Exception as e:  # missing package or unreadable file
+        logger.warning(f'Cannot read {events[0]}: {e!r}')
+        return None
+    return (max(times) - min(times)) / 3600 if len(times) > 1 else None
+
+
+def train_time(run_dir, runner_rows, train_logs=None):
     """(start timestamp, end timestamp, hours, source, note) of the training run."""
     info_path = os.path.join(run_dir, 'runner_info.json')
     if os.path.exists(info_path):  # exact: written by run_experiments.py after the successful attempt
@@ -98,6 +128,12 @@ def train_time(run_dir, runner_rows):
     end = max((os.path.getmtime(f) for f in last if os.path.exists(f)), default=None)
     note = runner_rows.get(name, {}).get('Status', '')
     note = note.replace('trained', '').strip(' ()') if note.startswith('trained') else ''
+    log_hours = train_log_hours(name, train_logs or {})
+    if log_hours is not None:  # exact: train.py's own measurement of the successful attempt
+        return start, end, round(log_hours, 2), 'train.py log (epochs completed in)', note, host or '', ''
+    ev_hours = events_hours(run_dir)
+    if ev_hours is not None:  # exact: timestamps logged every epoch by the training itself
+        return start, end, round(ev_hours, 2), 'TensorBoard events file (logged times)', note, host or '', ''
     if name in runner_rows and runner_rows[name].get('Train minutes'):
         hours = float(runner_rows[name]['Train minutes']) / 60  # includes out-of-memory retries
         return start, end, round(hours, 2), 'experiments.csv (incl. retries)', note, host or '', ''
@@ -106,7 +142,7 @@ def train_time(run_dir, runner_rows):
     return start, end, None, 'unknown', note, host or '', ''
 
 
-def read_train_run(run_dir, runner_rows):
+def read_train_run(run_dir, runner_rows, train_logs=None):
     opt = yaml.safe_load(open(os.path.join(run_dir, 'opt.yaml')))
     name = os.path.basename(run_dir)
     imgsz = int(opt['imgsz'])
@@ -121,7 +157,7 @@ def read_train_run(run_dir, runner_rows):
         r = r[r['metrics/mAP_0.5:0.95(M)'] > 0]
         epochs_done = len(r)
         best_epoch = int(r['epoch'][r['metrics/mAP_0.5:0.95(M)'].idxmax()]) if len(r) else None
-    start, end, hours, time_source, note, host, gpu = train_time(run_dir, runner_rows)
+    start, end, hours, time_source, note, host, gpu = train_time(run_dir, runner_rows, train_logs)
     mosaic = float(hyp.get('mosaic', 1.0))
     d = {'Run name': name, 'Backbone/Config': cfg_name, 'Train Resolution': imgsz, 'Batch Size': opt['batch_size'],
          'Epochs': opt['epochs'], 'Epochs done': epochs_done, 'Best epoch (val mask mAP)': best_epoch,
@@ -143,6 +179,8 @@ def read_train_run(run_dir, runner_rows):
 def read_report(rep_dir):
     """(run name, timestamp, fields) of a model_report.py output folder, or None."""
     path = os.path.join(rep_dir, 'test', 'report.json')
+    if not os.path.exists(path):  # mask_threshold_sweep.py writes <sweep>/<model>/thres_<t>/report.json
+        path = os.path.join(rep_dir, 'report.json')
     if not os.path.exists(path):
         return None
     rep = json.load(open(path))
@@ -153,7 +191,7 @@ def read_report(rep_dir):
     d.update({'Torch report': rep_dir, 'Torch backend': s.get('backend', ''), 'Torch FP16': s.get('half', ''),
               'Torch mask threshold': s.get('mask_thres', '0.5 (default, older report)'),
               'Torch mask mode': s.get('mask_mode', ''),
-              'Torch conf (P/R/IoU)': s.get('pixel_conf_thres', ''),
+              'Torch conf (P/R/IoU)': s.get('pixel_conf_thres', ''), 'Torch GPU': s.get('device', ''),
               'Torch instance mean IoU': rep.get('extra', {}).get('Instance mean IoU (matched)')})
     return run, (m.group(1) if m else ''), d
 
@@ -179,10 +217,15 @@ def main(config):
                     if row.get('Status', '').startswith('trained'):
                         runner_rows[row['Experiment']] = row  # later logs win
 
+    train_logs = {}  # run name -> training logs <name>_bs<batch>.log written by the runner
+    for d in expand(rc.runner_logs):
+        for log in sorted(glob.glob(os.path.join(d, 'train', '*_bs*.log'))):
+            train_logs.setdefault(re.sub(r'_bs\d+\.log$', '', os.path.basename(log)), []).append(log)
+
     runs = {}
     for d in expand(rc.train_runs):
         if os.path.exists(os.path.join(d, 'opt.yaml')):
-            runs[os.path.basename(d)] = read_train_run(d, runner_rows)
+            runs[os.path.basename(d)] = read_train_run(d, runner_rows, train_logs)
     logger.info(f'{len(runs)} training runs')
 
     reports = {}
@@ -192,45 +235,74 @@ def main(config):
             reports[r[0]] = (r[1], r[2])
     logger.info(f'{len(reports)} Torch reports')
 
-    trt = {}
-    trt_all = []
+    # TensorRT rows: newest per (run, machine)
+    trt, trt_all = {}, []
     for d in expand(rc.trt_runs):
         r = read_trt(d)
         if r:
-            trt.setdefault(r[0], []).append(r[1])
-            trt_all.append(r[1])
-    logger.info(f'{len(trt_all)} TensorRT result rows')
+            run, row = r
+            trt_all.append(row)
+            key = (run, row['Machine (host)'])
+            if key not in trt or row['Run date'] > trt[key]['Run date']:
+                trt[key] = row
+    hosts = sorted({h for _, h in trt})
+    logger.info(f'{len(trt_all)} TensorRT result rows from machines {hosts}')
+    names = dict(rc.get('machine_names') or {})
+    trt_host = rc.get('trt_machine') or (hosts[0] if hosts else '')
+    final_host = rc.get('final_machine') or ''
+    label = lambda h, t: f"{names.get(h, h)} / {t['OS']} / {t['GPU']}"  # noqa: E731
 
     defaults = OmegaConf.to_container(rc.defaults, resolve=True)
     sheet_rows, detail_rows = [], []
-    for name, tr in sorted(runs.items()):
-        base = dict(defaults)
-        base.update({k: v for k, v in tr.items()})
-        base['Inspection Resolution'] = tr['Train Resolution']
+    excluded = set(rc.get('exclude') or [])
+    all_runs = sorted((set(runs) | set(reports) | {r for r, _ in trt}) - excluded)
+    for name in all_runs:
+        row = dict(defaults)
+        tr = runs.get(name)
+        if tr:
+            row.update(tr)
+            row['Inspection Resolution'] = tr['Train Resolution']
+        else:  # training folder not available: training time from the runner logs only
+            row['Run name'] = name
+            hours = train_log_hours(name, train_logs)
+            if hours is not None:
+                row.update({'Time to Train (h)': round(hours, 2), 'Train time source': 'train.py log (epochs completed in)'})
+            elif runner_rows.get(name, {}).get('Train minutes'):
+                row.update({'Time to Train (h)': round(float(runner_rows[name]['Train minutes']) / 60, 2),
+                            'Train time source': 'experiments.csv (incl. retries)'})
+            logger.warning(f'{name}: no training folder (opt.yaml) found')
         if name in reports:
-            base.update(reports[name][1])
+            row.update(reports[name][1])
         else:
             logger.warning(f'{name}: no Torch report found')
-        notes = [n for n in [tr['Train note'], f"Torch metrics at mask threshold {base.get('Torch mask threshold')}"
+        notes = [n for n in [(tr or {}).get('Train note', ''),
+                             f"Torch metrics at mask threshold {row.get('Torch mask threshold')}"
+                             + (f", Torch on {row.get('Torch GPU')}" if row.get('Torch GPU') else '')
                              if name in reports else 'no Torch report'] if n]
-        for t in trt.get(name, [None]):  # one row per TensorRT machine / evaluation
-            row = dict(base)
-            row['Notes'] = '; '.join(notes)
-            if t:
-                row.update({k: t.get(k) for k in TRT_KEYS})
-                row['Machine'] = f"{t['Machine (host)']} / {t['OS']} / {t['GPU']}"
-                row['Inspection Resolution'] = t['Inspection Resolution']
-                row['TRT Precision Mode'] = t['TRT Precision Mode']
-                row.update({'TRT mask threshold': t.get('Mask threshold'), 'TRT mask upsample': t.get('Mask upsample'),
-                            'TRT post-processing': t.get('Post-processing on'), 'TRT build': t.get('Build type'),
-                            'TRT steady-state model (ms)': t.get('TRT Model steady-state median (ms)'),
-                            'TRT run date': t.get('Run date'), 'TRT report': t.get('Output folder')})
-                row['Notes'] += f"; TRT mask threshold {t.get('Mask threshold')} {t.get('Mask upsample')}, " \
-                                f"post-processing {t.get('Post-processing on')}"
-            else:
-                logger.warning(f'{name}: no TensorRT result row found')
-            sheet_rows.append({c: row.get(c) for c in SHEET_COLUMNS})
-            detail_rows.append(row)
+        t = trt.get((name, trt_host))
+        if t:  # TRT columns = the TensorRT test machine
+            row.update({k: t.get(k) for k in TRT_KEYS})
+            row['Machine'] = label(trt_host, t)
+            row['Inspection Resolution'] = t['Inspection Resolution']
+            row['TRT Precision Mode'] = t['TRT Precision Mode']
+            row.update({'TRT mask threshold': t.get('Mask threshold'), 'TRT mask upsample': t.get('Mask upsample'),
+                        'TRT post-processing': t.get('Post-processing on'), 'TRT build': t.get('Build type'),
+                        'TRT steady-state model (ms)': t.get('TRT Model steady-state median (ms)'),
+                        'TRT run date': t.get('Run date'), 'TRT report': t.get('Output folder')})
+            notes.append(f"TRT mask threshold {t.get('Mask threshold')} {t.get('Mask upsample')}, "
+                         f"post-processing {t.get('Post-processing on')}")
+        f = trt.get((name, final_host)) if final_host else None
+        if f:  # Final Machine columns = the production machine
+            row.update({'Final Machine Avg (ms)': f.get('TRT Total Avg (ms)'), 'Final Machine P95 (ms)': f.get('TRT P95 (ms)'),
+                        'Final Machine': label(final_host, f), 'Final Machine Pre (ms)': f.get('TRT Pre (ms)'),
+                        'Final Machine Model (ms)': f.get('TRT Model (ms)'), 'Final Machine Post (ms)': f.get('TRT Post (ms)'),
+                        'Final Machine steady-state model (ms)': f.get('TRT Model steady-state median (ms)'),
+                        'Final Machine Mask mAP50-95': f.get('Mask mAP50-95 TRT'), 'Final Machine IoU': f.get('IoU TRT'),
+                        'Final Machine report': f.get('Output folder')})
+            notes.append(f"Final Machine: {label(final_host, f)}")
+        row['Notes'] = '; '.join(notes)
+        sheet_rows.append({c: row.get(c) for c in SHEET_COLUMNS})
+        detail_rows.append(row)
 
     out = config.dataset.save_path
     sheet = pd.DataFrame(sheet_rows, columns=SHEET_COLUMNS)
@@ -239,6 +311,9 @@ def main(config):
         sheet.to_excel(w, sheet_name='Results sheet', index=False)
         details.to_excel(w, sheet_name='Details', index=False)
         pd.DataFrame(trt_all).to_excel(w, sheet_name='TRT runs', index=False)
+        tcols = ['Run name', 'Backbone/Config', 'Train Resolution', 'Epochs', 'Batch Size', 'Start Date', 'End Date',
+                 'Time to Train (h)', 'Train time source', 'Train machine', 'Train note']
+        details.reindex(columns=tcols).to_excel(w, sheet_name='Training time', index=False)
     sheet.to_csv(os.path.join(out, 'registry.tsv'), sep='\t', index=False)
     logger.info(f'{len(sheet_rows)} rows -> {os.path.join(out, "registry.xlsx")} and registry.tsv')
     return sheet

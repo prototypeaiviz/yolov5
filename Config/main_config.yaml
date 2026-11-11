@@ -92,10 +92,11 @@ compare_plots:       # segment/compare_plots.py: GT (left) | prediction (right) 
 mask_sweep:          # segment/mask_threshold_sweep.py: full report (map, pixel, plots settings above)
                      # once per model and mask threshold, one row each in mask_sweep.csv / .tsv
   models:            # best.pt files to test; empty = model.weights
-    - /media/mostafahaggag/D/Data/Results_yolo/v18_yolov5_9_11/v18_yolov5s_seg_640_nomosaic_proto2x/weights/best.pt
-    - /media/mostafahaggag/D/Data/Results_yolo/v18_yolov5_9_11/v18_yolov5m_seg_640_nomosaic_proto2x/weights/best.pt
+    - /media/mostafahaggag/D/Data/Results_yolo/results_10_11/v18_yolov5_results10_11/v18_yolov5s_seg_640_nomosaic_proto2x_e200/weights/best.pt
+    - /media/mostafahaggag/D/Data/Results_yolo/results_10_11/v18_yolov5_results10_11/v18_yolov5m_seg_640_nomosaic_proto2x_e200/weights/best.pt
+    - /media/mostafahaggag/D/Data/Results_yolo/results_10_11/v18_yolov5_results10_11/v18_yolov5n_seg_640_nomosaic_proto2x_e200/weights/best.pt
   data_yaml: "/media/mostafahaggag/D/Data/bismart/products_subsampled_jpg/bismart_laptop.yaml"  # empty = dataset.data_yaml
-  thresholds: [0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8]
+  thresholds: [0.55]  # 0.55 = same as every other Torch report in the registry
   plots: false       # true = pred_plots / worst_plots for every threshold (slow); false = no plots
 
 registry:            # segment/experiment_registry.py: one results-sheet row per training run (configuration,
@@ -105,15 +106,31 @@ registry:            # segment/experiment_registry.py: one results-sheet row per
     - /media/mostafahaggag/D/Data/Results_yolo/results_10_11/v18_yolov5_results10_11/*
     - /media/mostafahaggag/D/Data/Results_yolo/results_11_11/v18_yolov5_late_night/*
     - results/v18_yolov5_results_of_models/*
+    - BISMART/v17_yolov5s_seg_640_nomosaic_proto2x_*_e100
   report_runs:       # segment/model_report.py output folders (newest report of each run is used), glob patterns
     - /media/mostafahaggag/D/Data/Results_yolo/Run_20261109_results/Run_*_torch
     - /media/mostafahaggag/D/Data/Results_yolo/results_11_11/Run_2026111_late_night/Run_*_torch
     - results/final_results/Run_*_torch
+    - results/bin/Run_*_torch
+    # 3 x proto2x_e200: reports generated on the laptop (RTX 5060) with mask_threshold_sweep.py at 0.55, because the
+    # training-PC reports were not copied (Torch times are laptop times; accuracy is comparable)
+    - bin/Run_20261111_135949_mask_sweep/*/thres_0.55
+    - bin/Run_*_v17_yolov5s_seg_640_nomosaic_proto2x_*_e100_torch
   runner_logs:       # segment/run_experiments.py output folders (experiments.csv: status, train minutes)
     - /media/mostafahaggag/D/Data/Results_yolo/results_11_11/Run_2026111_late_night/Run_*_experiments
     - results/final_results/Run_*_experiments
+    - results/bin/Run_*_experiments
+    - bin/Run_*_experiments
   trt_runs:          # C++ TensorRT evaluation folders with result_row.json (copy them from each test machine)
-    - /media/mostafahaggag/D/Projects_cpp/edu_cpp/TensorRT/bin/Run_*_eval
+    - /media/mostafahaggag/D/Data/Results_yolo/results/alienware/Run_*_eval
+    - /media/mostafahaggag/D/Data/Results_yolo/results/final_machine/Run_*_eval
+  exclude:           # run names left out of the table
+    - yolov5n_seg_640_nomosaic   # first n run of 2026-11-06 under the old name; v18_yolov5n_seg_640_nomosaic is the same model
+  trt_machine: "DELL-PASQUALE"      # host whose results fill the TRT columns (and the Machine column)
+  final_machine: "DESKTOP-TKCMABA"  # host whose results fill Final Machine Avg / P95 ("" = none)
+  machine_names:     # host name -> name shown in the sheet
+    DELL-PASQUALE: "Alienware"
+    DESKTOP-TKCMABA: "Final machine"
   defaults:          # sheet columns that are the same for every run (edit here)
     Testing Data: "Advantech India"
     Split: "Val"
@@ -133,33 +150,35 @@ report:
   summary_csv: "bin/summary.csv"  # one row per report run (Torch and ONNX); empty = do not write
 
 experiments:         # segment/run_experiments.py: train these one after another, then report each best.pt
-  data_yaml: "/media/aiviz05/Dati/DATA/BISMART/products_subsampled_jpg/bismart.yaml"  # training PC; empty = dataset.data_yaml
+  # Same dataset as Excel: Advantech India, v17, Product only, one class.
+  # Historical v18_* folder names are retained in the registry; new run names use the actual dataset version.
+  data_yaml: ${dataset.data_yaml}  # reuse the existing training-PC dataset path
   project: "BISMART" # train.py --project (also the W&B project name)
   epochs: 100
   batch_size: 16
-  oom_batch_sizes: [8, 4, 2, 1]  # retried in this order after CUDA out of memory
+  oom_batch_sizes: []  # fixed batch 16 for this comparison; fail on OOM instead of changing the experiment
   device: "0"
   workers: 8
   skip_done: true    # skip training when <project>/<name>/weights/best.pt already exists
   report_torch: true
   report_onnx: false
-  runs:              # per run: name, weights, imgsz, hyp ("" = default), optional cfg (model yaml), epochs, batch_size, oom_batch_sizes, extra_args
-    # Experiment set 2026-11-11: plain yolov5n/s-seg, no mosaic (hyp.bismart.yaml), 100 epochs = the
-    # v18_yolov5{n,s}_seg_640_nomosaic runs (640, batch 16), changing one thing each. Compare with those runs.
-    #   lower resolution: 512 and 416; faster inference, smaller pills on the input
-    #   larger batch: 32. YOLOv5 accumulates gradients up to a nominal batch of 64 (train.py nbs), so batch 16 and 32
-    #   make the same optimizer steps; only BatchNorm statistics and speed change. Batch 32 does not fit at 640
-    #   (laptop memory test: s 640 batch 16 already 6.7 GB), so it is tested at 416, against the 416 batch 16 runs.
-    #   oom_batch_sizes [] = fail instead of silently training with a smaller batch.
-    # Estimated on the 3080: about 2.5 h in total.
-    - {name: v18_yolov5s_seg_512_nomosaic, weights: yolov5s-seg.pt, imgsz: 512, hyp: data/hyps/hyp.bismart.yaml}
-    - {name: v18_yolov5n_seg_512_nomosaic, weights: yolov5n-seg.pt, imgsz: 512, hyp: data/hyps/hyp.bismart.yaml}
-    - {name: v18_yolov5s_seg_416_nomosaic, weights: yolov5s-seg.pt, imgsz: 416, hyp: data/hyps/hyp.bismart.yaml}
-    - {name: v18_yolov5n_seg_416_nomosaic, weights: yolov5n-seg.pt, imgsz: 416, hyp: data/hyps/hyp.bismart.yaml}
-    - {name: v18_yolov5s_seg_416_nomosaic_bs32, weights: yolov5s-seg.pt, imgsz: 416, batch_size: 32, oom_batch_sizes: [], hyp: data/hyps/hyp.bismart.yaml}
-    - {name: v18_yolov5n_seg_416_nomosaic_bs32, weights: yolov5n-seg.pt, imgsz: 416, batch_size: 32, oom_batch_sizes: [], hyp: data/hyps/hyp.bismart.yaml}
-    # To test later (not in the queue yet): mask prototypes at stride 2 with bilinear upsample + depthwise 3x3 conv
-    # (Proto up='resize_dw', models/segment/yolov5{n,s,m}-seg-proto2x-dw.yaml). Compare with the transposed-conv
-    # version (*-proto2x.yaml) with the same settings. Uncomment to add to the queue.
-    # - {name: v18_yolov5s_seg_640_nomosaic_proto2x_dw_e200, weights: yolov5s-seg.pt, cfg: models/segment/yolov5s-seg-proto2x-dw.yaml, imgsz: 640, epochs: 200, hyp: data/hyps/hyp.bismart.proto2x.yaml, extra_args: "--mask-ratio 2"}
-    # - {name: v18_yolov5n_seg_640_nomosaic_proto2x_dw_e200, weights: yolov5n-seg.pt, cfg: models/segment/yolov5n-seg-proto2x-dw.yaml, imgsz: 640, epochs: 200, hyp: data/hyps/hyp.bismart.proto2x.yaml, extra_args: "--mask-ratio 2"}
+  runs:
+    # Two fresh COCO-initialized runs, no fine-tuning from EXP017.
+    # Compare with the existing 100-epoch linear-SGD s-proto2x run and EXP017 (200 epochs).
+    # Keep seed, image size, mask ratio, augmentation, batch and epoch budget fixed.
+    # Preserve patience=100 so early stopping does not confound this 100-epoch comparison.
+    # Extra arguments are supplied here in YAML using the existing runner interface.
+    - name: v17_yolov5s_seg_640_nomosaic_proto2x_sgd_cos_e100
+      weights: yolov5s-seg.pt
+      cfg: models/segment/yolov5s-seg-proto2x.yaml
+      imgsz: 640
+      epochs: 100
+      hyp: data/hyps/hyp.bismart.proto2x.yaml
+      extra_args: "--mask-ratio 2 --optimizer SGD --cos-lr --seed 0 --patience 100 --save-period 25"
+    - name: v17_yolov5s_seg_640_nomosaic_proto2x_adamw_cos_e100
+      weights: yolov5s-seg.pt
+      cfg: models/segment/yolov5s-seg-proto2x.yaml
+      imgsz: 640
+      epochs: 100
+      hyp: Config/hyp.bismart.proto2x.adamw.yaml
+      extra_args: "--mask-ratio 2 --optimizer AdamW --cos-lr --seed 0 --patience 100 --save-period 25"
