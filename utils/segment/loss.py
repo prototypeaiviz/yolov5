@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -44,6 +46,10 @@ class ComputeLoss:
         # default). Each one builds a full prototype-size mask (320x320 with proto2x), so images with 100+ pills ran
         # out of GPU memory. A random subset keeps the loss unbiased (same idea as YOLACT masks_to_train).
         self.mask_max = int(h.get('mask_max', 0))
+        # Relative multiplier on the existing mask loss; legacy configs keep identical weighting.
+        self.seg_gain = float(h.get('seg_gain', 1.0))
+        if not math.isfinite(self.seg_gain) or self.seg_gain < 0:
+            raise ValueError('seg_gain must be a finite, non-negative number')
 
     def __call__(self, preds, targets, masks):  # predictions, targets, model
         p, proto = preds
@@ -111,7 +117,7 @@ class ComputeLoss:
         lbox *= self.hyp["box"]
         lobj *= self.hyp["obj"]
         lcls *= self.hyp["cls"]
-        lseg *= self.hyp["box"] / bs
+        lseg *= (self.hyp["box"] / bs) * self.seg_gain
 
         loss = lbox + lobj + lcls + lseg
         return loss * bs, torch.cat((lbox, lseg, lobj, lcls)).detach()

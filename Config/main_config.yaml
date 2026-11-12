@@ -163,22 +163,87 @@ experiments:         # segment/run_experiments.py: train these one after another
   report_torch: true
   report_onnx: false
   runs:
-    # Two fresh COCO-initialized runs, no fine-tuning from EXP017.
-    # Compare with the existing 100-epoch linear-SGD s-proto2x run and EXP017 (200 epochs).
-    # Keep seed, image size, mask ratio, augmentation, batch and epoch budget fixed.
-    # Preserve patience=100 so early stopping does not confound this 100-epoch comparison.
-    # Extra arguments are supplied here in YAML using the existing runner interface.
-    - name: v17_yolov5s_seg_640_nomosaic_proto2x_sgd_cos_e100
+    # 2026-11-12: experiments 1-5 active; 6-8 are commented proposals, not runnable yet.
+    # COCO initialization, original LINEAR SGD; ONE change per run, not cumulative.
+    # Reference: historical v18_yolov5s_seg_640_nomosaic_proto2x (100 epochs, linear SGD).
+    # EXP202600018 (200 epochs) remains the longer-training comparison, not the matched control.
+    # Patience=100 preserves the 100-epoch budget. No batch fallback; no resume/fine-tuning.
+    # 1. Stronger mask supervision: seg_gain 1.0 -> 1.5.
+    - name: v17_yolov5s_seg_640_nomosaic_proto2x_sgd_linear_seggain1p5_e100
       weights: yolov5s-seg.pt
       cfg: models/segment/yolov5s-seg-proto2x.yaml
       imgsz: 640
       epochs: 100
-      hyp: data/hyps/hyp.bismart.proto2x.yaml
-      extra_args: "--mask-ratio 2 --optimizer SGD --cos-lr --seed 0 --patience 100 --save-period 25"
-    - name: v17_yolov5s_seg_640_nomosaic_proto2x_adamw_cos_e100
+      hyp: Config/hyp.bismart.proto2x.seggain1p5.yaml
+      extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 100 --save-period 25"
+
+    # 2. Reduced scale augmentation: scale 0.5 -> 0.25; baseline mask-loss weight.
+    - name: v17_yolov5s_seg_640_nomosaic_proto2x_sgd_linear_scale0p25_e100
       weights: yolov5s-seg.pt
       cfg: models/segment/yolov5s-seg-proto2x.yaml
       imgsz: 640
       epochs: 100
-      hyp: Config/hyp.bismart.proto2x.adamw.yaml
-      extra_args: "--mask-ratio 2 --optimizer AdamW --cos-lr --seed 0 --patience 100 --save-period 25"
+      hyp: Config/hyp.bismart.proto2x.scale0p25.yaml
+      extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 100 --save-period 25"
+
+    # 3. Lower initial learning rate: lr0 0.01 -> 0.005; lrf unchanged.
+    - name: v17_yolov5s_seg_640_nomosaic_proto2x_sgd_linear_lr0p005_e100
+      weights: yolov5s-seg.pt
+      cfg: models/segment/yolov5s-seg-proto2x.yaml
+      imgsz: 640
+      epochs: 100
+      hyp: Config/hyp.bismart.proto2x.lr0p005.yaml
+      extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 100 --save-period 25"
+
+    # 4. Higher initial learning rate: lr0 0.01 -> 0.02; lrf unchanged.
+    - name: v17_yolov5s_seg_640_nomosaic_proto2x_sgd_linear_lr0p02_e100
+      weights: yolov5s-seg.pt
+      cfg: models/segment/yolov5s-seg-proto2x.yaml
+      imgsz: 640
+      epochs: 100
+      hyp: Config/hyp.bismart.proto2x.lr0p02.yaml
+      extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 100 --save-period 25"
+
+    # 5. More mask-loss samples: mask_max 64 -> 96 per image and detection layer.
+    # Higher VRAM demand; OOM is recorded as failure, with no automatic batch-size change.
+    - name: v17_yolov5s_seg_640_nomosaic_proto2x_sgd_linear_maskmax96_e100
+      weights: yolov5s-seg.pt
+      cfg: models/segment/yolov5s-seg-proto2x.yaml
+      imgsz: 640
+      epochs: 100
+      hyp: Config/hyp.bismart.proto2x.maskmax96.yaml
+      extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 100 --save-period 25"
+
+    # ---- STOP: everything after experiment 5 stays commented out. ----
+    # 6-8 are design placeholders. Implement and validate before uncommenting;
+    # TODO paths below deliberately do not point to an existing baseline config.
+
+    # 6. Increase mask prototypes from 32 to 64.
+    # Requires model YAML, partial COCO loading check, and ONNX/TRT decoder validation.
+    # - name: v17_yolov5s_seg_640_nomosaic_proto2x_sgd_linear_nm64_e100
+    #   weights: yolov5s-seg.pt
+    #   cfg: TODO_IMPLEMENT_nm64_model.yaml
+    #   imgsz: 640
+    #   epochs: 100
+    #   hyp: data/hyps/hyp.bismart.proto2x.yaml
+    #   extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 100 --save-period 25"
+
+    # 7. Replace extra transposed-convolution upsampling with interpolation + convolution.
+    # Requires a new prototype block/model config and export/latency validation.
+    # - name: v17_yolov5s_seg_640_nomosaic_proto2x_sgd_linear_interpconv_e100
+    #   weights: yolov5s-seg.pt
+    #   cfg: TODO_IMPLEMENT_interpconv_model.yaml
+    #   imgsz: 640
+    #   epochs: 100
+    #   hyp: data/hyps/hyp.bismart.proto2x.yaml
+    #   extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 100 --save-period 25"
+
+    # 8. Add Dice to the baseline mask BCE loss (baseline seg_gain 1.0).
+    # Requires implemented/tested Dice loss and an explicitly chosen YAML loss weight.
+    # - name: v17_yolov5s_seg_640_nomosaic_proto2x_sgd_linear_dice_e100
+    #   weights: yolov5s-seg.pt
+    #   cfg: models/segment/yolov5s-seg-proto2x.yaml
+    #   imgsz: 640
+    #   epochs: 100
+    #   hyp: TODO_IMPLEMENT_dice_hyp.yaml
+    #   extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 100 --save-period 25"
