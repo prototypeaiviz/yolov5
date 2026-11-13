@@ -71,7 +71,7 @@ def main(config):
         im, _, pad = letterbox(im0, size, auto=False)  # same input as the C++ LETTERBOX_CENTER_NORM
         x = torch.from_numpy(im.transpose(2, 0, 1)[::-1].copy()).to(device).float()[None] / 255
         pred, proto = model(x)[:2]
-        det = non_max_suppression(pred, pc.conf_thres, pc.iou_nms, max_det=pc.max_det, nm=32)[0]
+        det = non_max_suppression(pred, pc.conf_thres, pc.iou_nms, max_det=pc.max_det, nm=proto.shape[1])[0]
         masks = decode_masks(proto[0], det[:, 6:].float(), det[:, :4].float(), x.shape[2:]) if len(det) \
             else det[:0, 0:0]
         mboxes, crops = to_original(masks, pad, h, w)

@@ -128,7 +128,7 @@ def main(config):
         im = torch.from_numpy(im.transpose(2, 0, 1)[::-1].copy()).to(device)
         im = (im.half() if half else im.float())[None] / 255
         pred, proto = model(im)[:2]
-        det = non_max_suppression(pred, pc.conf_thres, pc.iou_nms, max_det=pc.max_det, nm=32)[0]
+        det = non_max_suppression(pred, pc.conf_thres, pc.iou_nms, max_det=pc.max_det, nm=proto.shape[1])[0]
         masks = decode_masks(proto[0], det[:, 6:].float(), det[:, :4].float(), im.shape[2:]) if len(det) \
             else det[:0, 0:0]
         pred_inst = to_original(masks, pad, h, w)

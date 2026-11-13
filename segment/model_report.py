@@ -295,7 +295,7 @@ def run_pixel_and_timing(config, weights, half):
         pred, proto = model(im)[:2]
         sync(device)
         t2 = time.perf_counter()
-        det = non_max_suppression(pred, pc.conf_thres, pc.iou_nms, max_det=pc.max_det, nm=32)[0]
+        det = non_max_suppression(pred, pc.conf_thres, pc.iou_nms, max_det=pc.max_det, nm=proto.shape[1])[0]
         masks = decode_masks(proto[0], det[:, 6:].float(), det[:, :4].float(), im.shape[2:]) if len(det) else det[:0, 0:0]
         sync(device)
         t3 = time.perf_counter()

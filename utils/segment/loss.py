@@ -50,6 +50,10 @@ class ComputeLoss:
         self.seg_gain = float(h.get('seg_gain', 1.0))
         if not math.isfinite(self.seg_gain) or self.seg_gain < 0:
             raise ValueError('seg_gain must be a finite, non-negative number')
+        # Weight of a soft Dice term added to the per-instance mask BCE (0 = BCE only, the legacy behavior).
+        self.dice_gain = float(h.get('dice_gain', 0.0))
+        if not math.isfinite(self.dice_gain) or self.dice_gain < 0:
+            raise ValueError('dice_gain must be a finite, non-negative number')
 
     def __call__(self, preds, targets, masks):  # predictions, targets, model
         p, proto = preds
@@ -126,7 +130,16 @@ class ComputeLoss:
         # Mask loss for one image
         pred_mask = (pred @ proto.view(self.nm, -1)).view(-1, *proto.shape[1:])  # (n,32) @ (32,80,80) -> (n,80,80)
         loss = F.binary_cross_entropy_with_logits(pred_mask, gt_mask, reduction="none")
-        return (crop_mask(loss, xyxy).mean(dim=(1, 2)) / area).mean()
+        loss = (crop_mask(loss, xyxy).mean(dim=(1, 2)) / area).mean()
+        if self.dice_gain:
+            # Soft Dice inside each instance's box crop, on probabilities; the +1 smoothing keeps an empty
+            # ground-truth crop finite (its Dice loss then pushes the predicted probabilities towards 0).
+            prob = crop_mask(pred_mask.sigmoid(), xyxy)
+            gt = crop_mask(gt_mask, xyxy)
+            inter = (prob * gt).sum(dim=(1, 2))
+            dice = 1 - (2 * inter + 1) / (prob.sum(dim=(1, 2)) + gt.sum(dim=(1, 2)) + 1)
+            loss = loss + self.dice_gain * dice.mean()
+        return loss
 
     def build_targets(self, p, targets):
         # Build targets for compute_loss(), input targets(image,class,x,y,w,h)

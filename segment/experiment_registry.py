@@ -73,6 +73,10 @@ def date_str(ts):
 
 def proto_description(cfg_name, imgsz):
     """Mask prototype head of the model yaml: name and prototype size at this input size."""
+    if 'proto2x-nm64' in cfg_name:
+        return f'stride-2 prototypes, transposed conv 2x2, 64 prototypes ({imgsz // 2}x{imgsz // 2})'
+    if 'proto2x-rconv' in cfg_name:
+        return f'stride-2 prototypes, bilinear upsample + 3x3 conv ({imgsz // 2}x{imgsz // 2})'
     if 'proto2x-dw' in cfg_name:
         return f'stride-2 prototypes, bilinear upsample + depthwise 3x3 ({imgsz // 2}x{imgsz // 2})'
     if 'proto2x' in cfg_name:
@@ -164,7 +168,7 @@ def read_train_run(run_dir, runner_rows, train_logs=None):
          'Mosaic': 'no mosaic' if mosaic == 0 else f'mosaic {mosaic:g}',
          'Mask prototypes': proto_description(cfg_name, imgsz), 'Mask ratio': opt.get('mask_ratio', 4),
          'mask_max': hyp.get('mask_max', 0), 'Overlap masks': not opt.get('no_overlap', False),
-         'Segmentation loss multiplier': hyp.get('seg_gain', 1.0),
+         'Segmentation loss multiplier': hyp.get('seg_gain', 1.0), 'Mask Dice weight': hyp.get('dice_gain', 0.0),
          'Rect': opt.get('rect', False), 'Optimizer': opt.get('optimizer', ''), 'Pretrained': opt['weights'],
          'Data yaml': opt.get('data', ''), 'Start Date': date_str(start), 'End Date': date_str(end),
          'Time to Train (h)': hours, 'Train time source': time_source, 'Train machine': host, 'Train GPU': gpu,
@@ -173,7 +177,8 @@ def read_train_run(run_dir, runner_rows, train_logs=None):
              f'batch {opt["batch_size"]}' + (f' ({note})' if note else ''), d['Mosaic'],
              f'mask-ratio {d["Mask ratio"]}'] + ([f'mask_max {d["mask_max"]}'] if d['mask_max'] else []) + \
         (['--rect'] if d['Rect'] else []) + ([] if d['Overlap masks'] else ['--no-overlap']) + \
-        [f'seg_gain {d["Segmentation loss multiplier"]:g}']
+        [f'seg_gain {d["Segmentation loss multiplier"]:g}'] + \
+        ([f'dice_gain {d["Mask Dice weight"]:g}'] if d['Mask Dice weight'] else [])
     d['Configuration'] = ', '.join(parts)
     return d
 

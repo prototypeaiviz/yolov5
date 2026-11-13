@@ -197,7 +197,7 @@ def main(opt):
         im, _, pad = letterbox(im0, imgsz, stride=stride, auto=model.pt)
         im = torch.from_numpy(im.transpose(2, 0, 1)[::-1].copy()).to(device).float()[None] / 255
         out, proto = model(im)[:2]
-        det = non_max_suppression(out, opt.conf_thres, opt.iou_nms, max_det=1000, nm=32)[0]
+        det = non_max_suppression(out, opt.conf_thres, opt.iou_nms, max_det=1000, nm=proto.shape[1])[0]
         masks = process_mask(proto[0], det[:, 6:], det[:, :4], im.shape[2:], upsample=True) if len(det) else det[:0, 0:0]
         pred = to_original(masks, pad, h, w)
         pred_cls = det[:, 5].int().cpu().numpy()
