@@ -34,6 +34,7 @@ import numpy as np
 import onnxruntime as ort
 from loguru import logger
 from omegaconf import OmegaConf
+from wcwidth import width
 
 IMG_EXT = ('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff')
 
@@ -73,17 +74,48 @@ def preprocess(im0, size, dtype):
 # ---------------------------------------------------------------------------------------------------- post-processing
 def nms(boxes, scores, iou_thres):
     """Greedy NMS (same rule as torchvision.ops.nms). boxes (n, 4) x1y1x2y2. Returns kept indices, best first."""
+    # boxes [97,4]
+    # SO LIEK THAT  each is an list of all values
     x1, y1, x2, y2 = boxes.T
+    # calcaulte the area for alll boxes
     areas = (x2 - x1) * (y2 - y1)
+    # sort again, redundandt we donto need
     order = scores.argsort()[::-1]
     keep = []
     while order.size:
+        # best box still in the queue
+        # get its index
         i = order[0]
+        # it survives, no question
+        # add it okay ?
         keep.append(i)
+        # The intersection rectangle
+        # The overlap of two boxes is a rectangle:
+        ##################################################################
+            # left edge = the larger of the two left edges → max(x1)
+            # top edge = the larger of the two top edges → max(y1)
+            # right edge = the smaller of the two right edges → min(x2)
+            # bottom edge = the smaller of the two bottom edges → min(y2)
+        """
+          box 0 ┌─────────┐
+        │   ┌─────┼──┐ box 1
+        │   │/////│  │      ///// = intersection
+        └───┼─────┘  │      left  = max(0, 1)  = 1
+            └────────┘      right = min(10, 11) = 10
+        """
+        ###################################################################
+        # the boxes still waiting for a decision. Box 0 is now compared against all of them at once.
+        # get the max beteen the first one and everyhting after
         xx1, yy1 = np.maximum(x1[i], x1[order[1:]]), np.maximum(y1[i], y1[order[1:]])
+        # get the min beteen the first one and everyhting after
         xx2, yy2 = np.minimum(x2[i], x2[order[1:]]), np.minimum(y2[i], y2[order[1:]])
-        inter = np.clip(xx2 - xx1, 0, None) * np.clip(yy2 - yy1, 0, None)
-        iou = inter / (areas[i] + areas[order[1:]] - inter)
+        width = xx2 - xx1
+        height = yy2 - yy1
+        inter = np.clip(width, 0, None) * np.clip(height, 0, None)
+        # areas is a numpy array and with numyp array 100 +a = 200 for ALL
+        union =   (areas[i] + areas[order[1:]] - inter)
+        iou = inter / union
+        # drop duplicates of box i, keep the rest in the queue
         order = order[1:][iou <= iou_thres]
     return np.array(keep, dtype=int)
 
@@ -91,25 +123,56 @@ def nms(boxes, scores, iou_thres):
 def detect(out0, nc, conf_thres, iou_thres, max_det, max_wh=7680):
     """Steps 4-5 (as YOLOv5 non_max_suppression, one label per box). Returns boxes (n, 4) x1y1x2y2 in input
     pixels, confidences (n,), classes (n,), mask coefficients (n, 32)."""
+    # (1, 25200, 5 + nc + 32)
+    # were are 25200 candidate predictions: (80² + 40² + 20²) grid cells × 3 anchors.
+    # [cx, cy, w, h, obj, cls_0 … cls_{nc-1}, m_0 … m_31]
+    #  └─ box (pixels) ┘ └ objectness ┘ └ class probs ┘ └ 32 mask coefficients ┘
+    # The exported head has already decoded the box into input-pixel coordinates and applied sigmoid to obj
+    # and the class scores. The 32 mask coefficients are still raw, with no sigmoid applied.
+    # # (25200, 5+nc+32)
     p = out0[0].astype(np.float32)
+    #  # objectness prefilter
     p = p[p[:, 4] > conf_thres]  # objectness first (cheap)
+    # The final confidence is obj × cls, and both are ≤ 1, so conf ≤ obj.
+    # (n, nc)  conf per class
+    # n is the number of boxes, ---> n is 97
     scores = p[:, 5:5 + nc] * p[:, 4:5]  # conf = obj x cls
+    # # best class per
+    # class of each instance
     cls = scores.argmax(1)
+    # confidence fo each class
     conf = scores[np.arange(len(p)), cls]
+    # select the ones to keep
     keep = conf > conf_thres
+    # filtering
     p, cls, conf = p[keep], cls[keep], conf[keep]
     if not len(p):
         return np.zeros((0, 4), np.float32), np.zeros(0, np.float32), np.zeros(0, int), np.zeros((0, 32), np.float32)
+    # annotaitons
     cx, cy, w, h = p[:, 0], p[:, 1], p[:, 2], p[:, 3]
+    # go from # xcycwh → x1y1x2y2
     boxes = np.stack([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], 1)
+
+    # NMS needs corner format. Sorting by descending confidence puts the strongest boxes first, and
+    # 30000 cap matches YOLOv5’s max_nms.
     order = conf.argsort()[::-1][:30000]  # same cap as YOLOv5 (max_nms)
+    # filter based on teh order
+    # The mask coefficients p[:, 5+nc:] go through the same reordering, so every box stays paired with its coefficients.
     boxes, conf, cls, coefs = boxes[order], conf[order], cls[order], p[order, 5 + nc:]
-    k = nms(boxes + cls[:, None] * max_wh, conf, iou_thres)[:max_det]  # class offset = NMS per class
+    #
+    class_offset = cls[:, None] * max_wh  # (n, 1), shifts each class to its own region
+
+    k = nms(boxes + class_offset, conf, iou_thres)[:max_det]  # class offset = NMS per class
     return boxes[k], conf[k], cls[k], coefs[k]
 
 
 def decode_masks(coefs, protos, boxes, size, mask_thres):
     """Step 6: masks at input size (n, size, size), bool. Upsample first, then cut at the box (sharper edges)."""
+    # protos
+    # out1 (protos): shape (1, 32, 160, 160).
+    # These are 32 “prototype” masks at ¼ of the input resolution. They are shared by all detections.
+    # The core idea is that each detection’s mask is a weighted sum of the 32 prototypes,
+        # and that detection’s 32 coefficients are the weights.
     c, mh, mw = protos.shape
     m = 1 / (1 + np.exp(-(coefs @ protos.reshape(c, -1))))  # sigmoid, (n, mh*mw)
     m = m.reshape(-1, mh, mw)

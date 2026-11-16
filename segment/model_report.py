@@ -90,6 +90,12 @@ def sync(device):
         torch.cuda.synchronize(device)
 
 
+def fixed_shape_of(config):
+    """model.fixed_shape from the config as (height, width), or None when it is empty."""
+    shape = config.model.get('fixed_shape', None)
+    return (int(shape[0]), int(shape[1])) if shape else None
+
+
 def run_map(config, weights, half):
     """Standard mAP evaluation with segment/val.py. Returns box/mask metrics and per-class mask mAP50-95."""
     (mp_b, mr_b, map50_b, map_b, mp_m, mr_m, map50_m, map_m, *_), _, speeds, metrics = seg_val.run(
@@ -97,6 +103,7 @@ def run_map(config, weights, half):
         weights=weights,
         batch_size=1,  # always batch 1 for validation testing
         imgsz=config.model.imgsz,
+        fixed_shape=fixed_shape_of(config),
         conf_thres=config.map.conf_thres,
         iou_thres=config.map.iou_thres,
         max_det=config.map.max_det,
@@ -267,7 +274,8 @@ def run_pixel_and_timing(config, weights, half):
     model = DetectMultiBackend(weights, device=device, data=config.dataset.data_yaml, fp16=half)
     stride, names = model.stride, model.names
     imgsz = check_img_size(config.model.imgsz, s=stride)
-    model.warmup(imgsz=(1, 3, imgsz, imgsz))
+    fixed_shape = fixed_shape_of(config)  # (height, width) or None
+    model.warmup(imgsz=(1, 3, *(fixed_shape or (imgsz, imgsz))))
     session = getattr(model, 'session', None)
     providers = session.get_providers() if session is not None else []
 
@@ -287,7 +295,10 @@ def run_pixel_and_timing(config, weights, half):
         h, w = im0.shape[:2]
         sync(device)
         t0 = time.perf_counter()
-        im, _, pad = letterbox(im0, imgsz, stride=stride, auto=model.pt)
+        if fixed_shape:  # always the full fixed rectangle, like a fixed-size engine
+            im, _, pad = letterbox(im0, fixed_shape, stride=stride, auto=False)
+        else:
+            im, _, pad = letterbox(im0, imgsz, stride=stride, auto=model.pt)
         im = torch.from_numpy(im.transpose(2, 0, 1)[::-1].copy()).to(device)
         im = (im.half() if half else im.float())[None] / 255
         sync(device)
@@ -480,6 +491,7 @@ def main(config, weights=None, label='Torch', half=None, extra=None):
             'onnxruntime_providers': p['providers'],
             'half': p['half'],
             'imgsz': config.model.imgsz,
+            'fixed_shape': 'x'.join(str(x) for x in fixed_shape_of(config) or ()),  # height x width, '' = not used
             'map_conf_thres': config.map.conf_thres,
             'pixel_conf_thres': config.pixel.conf_thres,
             'mask_mode': config.pixel.get('mask_mode', 'crop_then_upsample'),

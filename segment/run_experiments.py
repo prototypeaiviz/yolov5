@@ -62,6 +62,8 @@ def train_command(config, run, batch_size):
         cmd += ['--cfg', run.cfg]
     if run.get('hyp'):
         cmd += ['--hyp', run.hyp]
+    if run.get('fixed_shape'):  # [height, width]: every train/val image and mosaic has this shape
+        cmd += ['--fixed-shape', str(run.fixed_shape[0]), str(run.fixed_shape[1])]
     if run.get('extra_args'):
         cmd += str(run.extra_args).split()
     return cmd
@@ -184,6 +186,7 @@ def report(config, run, backend):
     cfg.model_name = run.name
     cfg.model.weights = os.path.join(ROOT, ex.project, run.name, 'weights', 'best.pt')
     cfg.model.imgsz = run.get('imgsz', 640)
+    cfg.model.fixed_shape = list(run.get('fixed_shape', None) or [])
     cfg.dataset.data_yaml = ex.data_yaml or config.dataset.data_yaml
     if backend == 'onnx':
         cfg.onnx.weights = ''  # export this best.pt
@@ -211,7 +214,14 @@ def main(config):
         raise SystemExit('Experiments must run on GPU, but CUDA is not available or experiments.device is cpu.')
 
     rows, sheet_rows = [], []
+    only = [int(x) for x in ex.get('only', None) or []]  # run numbers to execute (1 = first entry); empty = all
+    unknown = [x for x in only if not 1 <= x <= len(ex.runs)]
+    if unknown:
+        raise SystemExit(f'experiments.only has run numbers outside 1..{len(ex.runs)}: {unknown}')
     for k, run in enumerate(ex.runs, 1):
+        if only and k not in only:
+            logger.info(f'===== Experiment {k}/{len(ex.runs)}: {run.name} not in experiments.only, skipped =====')
+            continue
         logger.info(f'===== Experiment {k}/{len(ex.runs)}: {run.name} =====')
         status, batch_used, minutes = train(config, run, config.dataset.train_output)
         row = {'Experiment': run.name, 'Weights': run.weights, 'Imgsz': run.get('imgsz', 640),

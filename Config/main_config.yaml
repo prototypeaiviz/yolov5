@@ -14,6 +14,8 @@ model:
   device: "0"        # "0" for the first GPU, "cpu" for CPU
   require_cuda: true # inspection runs on GPU: stop instead of silently running on CPU
   imgsz: 640
+  fixed_shape: []    # [height, width], e.g. [640, 1248]: letterbox every image into this fixed rectangle
+                     # (imgsz must be the long side); [] = normal square / minimal-rectangle behaviour
   half: false        # true = FP16 for metrics and timing (CUDA only)
 
 dataset:
@@ -162,8 +164,9 @@ experiments:         # segment/run_experiments.py: train these one after another
   skip_done: true    # skip training when <project>/<name>/weights/best.pt already exists
   report_torch: true
   report_onnx: false
+  only: [8, 9, 10]   # run numbers to execute (position in the list below, 1 = first); [] = all runs
   runs:
-    # 2026-11-13: experiments 1-8 active.
+    # 2026-11-13: experiments 1-8 defined. 2026-11-16: 9-10 added; only 8, 9, 10 execute (see `only`).
     # COCO initialization, original LINEAR SGD; ONE change per run, not cumulative.
     # Reference: historical v18_yolov5s_seg_640_nomosaic_proto2x (100 epochs, linear SGD).
     # EXP202600018 (200 epochs) remains the longer-training comparison, not the matched control.
@@ -240,4 +243,27 @@ experiments:         # segment/run_experiments.py: train these one after another
       imgsz: 640
       epochs: 100
       hyp: Config/hyp.bismart.proto2x.dice1p0.yaml
+      extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 100 --save-period 25"
+
+    # 9. Fixed rectangular input 640 x 1248 (height x width), no mosaic. Control for run 10.
+    # Each image is resized to fit inside 640 x 1248 and padded; train, val and report use this same shape.
+    # About 2x the pixels of 640 x 640: more VRAM and time per epoch. OOM at batch 16 is recorded as failure.
+    # Not comparable in latency with the 640 x 640 runs; needs a 640 x 1248 ONNX / TensorRT engine.
+    - name: v17_yolov5s_seg_640x1248_nomosaic_proto2x_sgd_linear_e100
+      weights: yolov5s-seg.pt
+      cfg: models/segment/yolov5s-seg-proto2x.yaml
+      imgsz: 1248
+      fixed_shape: [640, 1248]
+      epochs: 100
+      hyp: data/hyps/hyp.bismart.proto2x.yaml
+      extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 100 --save-period 25"
+
+    # 10. Same fixed 640 x 1248 input with mosaic 1.0: every training image is a 640 x 1248 mosaic of 4 images.
+    - name: v17_yolov5s_seg_640x1248_mosaic_proto2x_sgd_linear_e100
+      weights: yolov5s-seg.pt
+      cfg: models/segment/yolov5s-seg-proto2x.yaml
+      imgsz: 1248
+      fixed_shape: [640, 1248]
+      epochs: 100
+      hyp: Config/hyp.bismart.proto2x.mosaic.yaml
       extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 100 --save-period 25"

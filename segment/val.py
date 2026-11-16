@@ -132,6 +132,7 @@ def run(
         weights=None,  # model.pt path(s)
         batch_size=32,  # batch size
         imgsz=640,  # inference size (pixels)
+        fixed_shape=None,  # (height, width): letterbox every image into this fixed shape (imgsz = long side)
         conf_thres=0.001,  # confidence threshold
         iou_thres=0.6,  # NMS IoU threshold
         max_det=300,  # maximum detections per image
@@ -214,8 +215,10 @@ def run(
             ncm = model.model.nc
             assert ncm == nc, f'{weights} ({ncm} classes) trained on different --data than what you passed ({nc} ' \
                               f'classes). Pass correct combination of --weights and --data that are trained together.'
-        model.warmup(imgsz=(1 if pt else batch_size, 3, imgsz, imgsz))  # warmup
+        model.warmup(imgsz=(1 if pt else batch_size, 3, *(fixed_shape or (imgsz, imgsz))))  # warmup
         pad, rect = (0.0, False) if task == 'speed' else (0.5, pt)  # square inference for benchmarks
+        if fixed_shape:
+            rect = False  # one fixed rectangle for all images
         task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
         dataloader = create_dataloader(data[task],
                                        imgsz,
@@ -227,7 +230,8 @@ def run(
                                        workers=workers,
                                        prefix=colorstr(f'{task}: '),
                                        overlap_mask=overlap,
-                                       mask_downsample_ratio=mask_downsample_ratio)[0]
+                                       mask_downsample_ratio=mask_downsample_ratio,
+                                       fixed_shape=tuple(fixed_shape) if fixed_shape else None)[0]
 
     seen = 0
     confusion_matrix = ConfusionMatrix(nc=nc)
@@ -362,7 +366,7 @@ def run(
     # Print speeds
     t = tuple(x.t / seen * 1E3 for x in dt)  # speeds per image
     if not training:
-        shape = (batch_size, 3, imgsz, imgsz)
+        shape = (batch_size, 3, *(fixed_shape or (imgsz, imgsz)))
         LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {shape}' % t)
 
     # Plots

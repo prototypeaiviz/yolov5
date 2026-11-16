@@ -134,6 +134,14 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     # Image size
     gs = max(int(model.stride.max()), 32)  # grid size (max stride)
     imgsz = check_img_size(opt.imgsz, gs, floor=gs * 2)  # verify imgsz is gs-multiple
+    # Fixed rectangular shape (height, width) for every training and validation image, mosaic included
+    fixed_shape = tuple(opt.fixed_shape) if opt.fixed_shape else None
+    if fixed_shape:
+        assert not (opt.rect or opt.multi_scale or opt.image_weights or opt.quad), \
+            '--fixed-shape cannot be combined with --rect, --multi-scale, --image-weights or --quad'
+        assert all(x > 0 and x % gs == 0 for x in fixed_shape), \
+            f'--fixed-shape {fixed_shape} must be multiples of the max stride {gs}'
+        assert imgsz == max(fixed_shape), f'--imgsz {imgsz} must equal the long side of --fixed-shape {fixed_shape}'
 
     # Batch size
     if RANK == -1 and batch_size == -1:  # single-GPU only, estimate best batch size
@@ -194,6 +202,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         shuffle=True,
         mask_downsample_ratio=mask_ratio,
         overlap_mask=overlap,
+        fixed_shape=fixed_shape,
     )
     labels = np.concatenate(dataset.labels, 0)
     mlc = int(labels[:, 0].max())  # max label class
@@ -208,12 +217,13 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                        single_cls,
                                        hyp=hyp,
                                        cache=None if noval else opt.cache,
-                                       rect=True,
+                                       rect=not fixed_shape,  # fixed shape: validate at the training shape
                                        rank=-1,
                                        workers=workers * 2,
                                        pad=0.5,
                                        mask_downsample_ratio=mask_ratio,
                                        overlap_mask=overlap,
+                                       fixed_shape=fixed_shape,
                                        prefix=colorstr('val: '))[0]
 
         if not resume:
@@ -233,7 +243,9 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     nl = de_parallel(model).model[-1].nl  # number of detection layers (to scale hyps)
     hyp['box'] *= 3 / nl  # scale to layers
     hyp['cls'] *= nc / 80 * 3 / nl  # scale to classes and layers
-    hyp['obj'] *= (imgsz / 640) ** 2 * 3 / nl  # scale to image size and layers
+    # scale to image size and layers (fixed shape: real pixel count, not the square of the long side)
+    area_ratio = fixed_shape[0] * fixed_shape[1] / 640 ** 2 if fixed_shape else (imgsz / 640) ** 2
+    hyp['obj'] *= area_ratio * 3 / nl
     hyp['label_smoothing'] = opt.label_smoothing
     model.nc = nc  # attach number of classes to model
     model.hyp = hyp  # attach hyperparameters to model
@@ -253,6 +265,8 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     stopper, stop = EarlyStopping(patience=opt.patience), False
     compute_loss = ComputeLoss(model, overlap=overlap)  # init loss class
     # callbacks.run('on_train_start')
+    if fixed_shape:
+        LOGGER.info(f'Fixed shape {fixed_shape[0]}x{fixed_shape[1]} (height x width) for train and val')
     LOGGER.info(f'Image sizes {imgsz} train, {imgsz} val\n'
                 f'Using {train_loader.num_workers * WORLD_SIZE} dataloader workers\n'
                 f"Logging results to {colorstr('bold', save_dir)}\n"
@@ -469,6 +483,9 @@ def parse_opt(known=False):
     parser.add_argument('--batch-size', type=int, default=16, help='total batch size for all GPUs, -1 for autobatch')
     parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=640, help='train, val image size (pixels)')
     parser.add_argument('--rect', action='store_true', help='rectangular training')
+    parser.add_argument('--fixed-shape', nargs=2, type=int, default=None, metavar=('HEIGHT', 'WIDTH'),
+                        help='fixed rectangular train/val shape, e.g. 640 1248; works with mosaic; '
+                             '--imgsz must be the long side')
     parser.add_argument('--resume', nargs='?', const=True, default=False, help='resume most recent training')
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
     parser.add_argument('--noval', action='store_true', help='only validate final epoch')

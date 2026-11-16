@@ -37,7 +37,10 @@ def create_dataloader(path,
                       prefix='',
                       shuffle=False,
                       mask_downsample_ratio=1,
-                      overlap_mask=False):
+                      overlap_mask=False,
+                      fixed_shape=None):
+    if fixed_shape and rect:
+        raise ValueError('fixed_shape and rect cannot be used together: fixed_shape already gives one rectangle')
     if rect and shuffle:
         LOGGER.warning('WARNING ⚠️ --rect is incompatible with DataLoader shuffle, setting shuffle=False')
         shuffle = False
@@ -56,7 +59,8 @@ def create_dataloader(path,
             image_weights=image_weights,
             prefix=prefix,
             downsample_ratio=mask_downsample_ratio,
-            overlap=overlap_mask)
+            overlap=overlap_mask,
+            fixed_shape=fixed_shape)
 
     batch_size = min(batch_size, len(dataset))
     nd = torch.cuda.device_count()  # number of CUDA devices
@@ -97,11 +101,55 @@ class LoadImagesAndLabelsAndMasks(LoadImagesAndLabels):  # for training/testing
         prefix="",
         downsample_ratio=1,
         overlap=False,
+        fixed_shape=None,
     ):
+        # fixed_shape = (height, width): every image and every mosaic has exactly this size (e.g. 640 x 1248).
+        # Unlike rect=True, the batches are not sorted by aspect ratio, so shuffle and mosaic stay available.
+        # Set before super().__init__(), because image caching there already calls load_image().
+        self.fixed_shape = self.check_fixed_shape(fixed_shape, img_size, stride, rect)
         super().__init__(path, img_size, batch_size, augment, hyp, rect, image_weights, cache_images, single_cls,
                          stride, pad, min_items, prefix)
         self.downsample_ratio = downsample_ratio
         self.overlap = overlap
+        if self.fixed_shape:
+            self.mosaic_border = [-self.fixed_shape[0] // 2, -self.fixed_shape[1] // 2]  # height, width
+
+    @staticmethod
+    def check_fixed_shape(fixed_shape, img_size, stride, rect):
+        # Returns (height, width) as ints, or None when fixed_shape is not used
+        if not fixed_shape:
+            return None
+        if rect:
+            raise ValueError('fixed_shape and rect cannot be used together')
+        if len(fixed_shape) != 2:
+            raise ValueError(f'fixed_shape must be (height, width), got {fixed_shape}')
+        h, w = (int(x) for x in fixed_shape)
+        if h <= 0 or w <= 0 or h % stride or w % stride:
+            raise ValueError(f'fixed_shape {h}x{w} must be positive multiples of the model stride {stride}')
+        if max(h, w) != img_size:
+            raise ValueError(f'img_size {img_size} must equal the long side of fixed_shape {h}x{w}')
+        return h, w
+
+    def load_image(self, i):
+        # With fixed_shape the image is resized to fit INSIDE height x width (aspect ratio kept).
+        # The base class only limits the long side, which can leave the short side larger than the target.
+        if not self.fixed_shape:
+            return super().load_image(i)
+        im, f, fn = self.ims[i], self.im_files[i], self.npy_files[i]
+        if im is not None:  # cached in RAM (already resized)
+            return self.ims[i], self.im_hw0[i], self.im_hw[i]
+        if fn.exists():  # load npy
+            im = np.load(fn)
+        else:  # read image
+            im = cv2.imread(f)  # BGR
+            assert im is not None, f'Image Not Found {f}'
+        h0, w0 = im.shape[:2]  # orig hw
+        r = min(self.fixed_shape[0] / h0, self.fixed_shape[1] / w0)  # ratio
+        if r != 1:
+            interp = cv2.INTER_LINEAR if (self.augment or r > 1) else cv2.INTER_AREA
+            w, h = min(round(w0 * r), self.fixed_shape[1]), min(round(h0 * r), self.fixed_shape[0])
+            im = cv2.resize(im, (max(w, 1), max(h, 1)), interpolation=interp)
+        return im, (h0, w0), im.shape[:2]  # im, hw_original, hw_resized
 
     def __getitem__(self, index):
         index = self.indices[index]  # linear, shuffled, or image_weights
@@ -123,7 +171,8 @@ class LoadImagesAndLabelsAndMasks(LoadImagesAndLabels):  # for training/testing
             img, (h0, w0), (h, w) = self.load_image(index)
 
             # Letterbox
-            shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
+            # final letterboxed shape
+            shape = self.batch_shapes[self.batch[index]] if self.rect else (self.fixed_shape or self.img_size)
             img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
             shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
@@ -207,8 +256,8 @@ class LoadImagesAndLabelsAndMasks(LoadImagesAndLabels):  # for training/testing
     def load_mosaic(self, index):
         # YOLOv5 4-mosaic loader. Loads 1 image + 3 random images into a 4-image mosaic
         labels4, segments4 = [], []
-        s = self.img_size
-        yc, xc = (int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border)  # mosaic center x, y
+        sh, sw = self.fixed_shape or (self.img_size, self.img_size)  # output height, width (canvas is 2x)
+        yc, xc = (int(random.uniform(-x, 2 * s + x)) for x, s in zip(self.mosaic_border, (sh, sw)))  # mosaic center
 
         # 3 additional image indices
         indices = [index] + random.choices(self.indices, k=3)  # 3 additional image indices
@@ -218,17 +267,17 @@ class LoadImagesAndLabelsAndMasks(LoadImagesAndLabels):  # for training/testing
 
             # place img in img4
             if i == 0:  # top left
-                img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
+                img4 = np.full((sh * 2, sw * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
                 x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
                 x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
             elif i == 1:  # top right
-                x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
+                x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, sw * 2), yc
                 x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
             elif i == 2:  # bottom left
-                x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(s * 2, yc + h)
+                x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(sh * 2, yc + h)
                 x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, w, min(y2a - y1a, h)
             elif i == 3:  # bottom right
-                x1a, y1a, x2a, y2a = xc, yc, min(xc + w, s * 2), min(s * 2, yc + h)
+                x1a, y1a, x2a, y2a = xc, yc, min(xc + w, sw * 2), min(sh * 2, yc + h)
                 x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
 
             img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
@@ -245,8 +294,12 @@ class LoadImagesAndLabelsAndMasks(LoadImagesAndLabels):  # for training/testing
 
         # Concat/clip labels
         labels4 = np.concatenate(labels4, 0)
-        for x in (labels4[:, 1:], *segments4):
-            np.clip(x, 0, 2 * s, out=x)  # clip when using random_perspective()
+        # clip when using random_perspective(): x to the canvas width, y to the canvas height
+        np.clip(labels4[:, 1::2], 0, 2 * sw, out=labels4[:, 1::2])  # x1, x2
+        np.clip(labels4[:, 2::2], 0, 2 * sh, out=labels4[:, 2::2])  # y1, y2
+        for x in segments4:
+            np.clip(x[:, 0], 0, 2 * sw, out=x[:, 0])
+            np.clip(x[:, 1], 0, 2 * sh, out=x[:, 1])
         # img4, labels4 = replicate(img4, labels4)  # replicate
 
         # Augment
