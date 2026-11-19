@@ -164,25 +164,61 @@ def detect(out0, nc, conf_thres, iou_thres, max_det, max_wh=7680):
 
     k = nms(boxes + class_offset, conf, iou_thres)[:max_det]  # class offset = NMS per class
     return boxes[k], conf[k], cls[k], coefs[k]
+def compute_masks(coefs: np.ndarray, protos: np.ndarray) -> np.ndarray:
+    """
+    Combine prototype masks with per-detection coefficients (YOLO-seg style).
+
+    Args:
+        coefs:  (n, c)       mask coefficients, one row per detection
+        protos: (c, mh, mw)  prototype masks
+
+    Returns:
+        (n, mh, mw) per-pixel probabilities in (0, 1)
+    """
+    c, mh, mw = protos.shape                  # c prototypes, each mh×mw
+    protos_flat = protos.reshape(c, -1)       # (c, mh*mw)
+    logits = coefs @ protos_flat              # (n, mh*mw): weighted sum of prototypes
+    neg_logits = -logits                      # (n, mh*mw)
+    exp_term = np.exp(neg_logits)             # (n, mh*mw): e^(-x)
+    denom = 1 + exp_term                      # (n, mh*mw): 1 + e^(-x)
+    m = 1 / denom                             # (n, mh*mw): sigmoid
+    m = m.reshape(-1, mh, mw)                 # (n, mh, mw)
+    return m
 
 
 def decode_masks(coefs, protos, boxes, size, mask_thres):
-    """Step 6: masks at input size (n, size, size), bool. Upsample first, then cut at the box (sharper edges)."""
-    # protos
-    # out1 (protos): shape (1, 32, 160, 160).
-    # These are 32 “prototype” masks at ¼ of the input resolution. They are shared by all detections.
-    # The core idea is that each detection’s mask is a weighted sum of the 32 prototypes,
-        # and that detection’s 32 coefficients are the weights.
-    c, mh, mw = protos.shape
-    m = 1 / (1 + np.exp(-(coefs @ protos.reshape(c, -1))))  # sigmoid, (n, mh*mw)
-    m = m.reshape(-1, mh, mw)
-    masks = np.zeros((len(m), size, size), dtype=bool)
-    for k in range(len(m)):
-        up = cv2.resize(m[k], (size, size), interpolation=cv2.INTER_LINEAR)  # bilinear, like F.interpolate
+    """
+    Step 6: masks at input size (n, size, size), bool.
+    Upsample first, then cut at the box (sharper edges).
+
+    protos (out1): shape (1, 32, 160, 160) -> 32 prototype masks at 1/4 input
+    resolution, shared by all detections. Each detection's mask is a weighted
+    sum of the 32 prototypes; its 32 coefficients are the weights.
+
+    Args:
+        coefs:      (n, 32)            per-detection mask coefficients
+        protos:     (1, 32, mh, mw) or (32, mh, mw)
+        boxes:      (n, 4)             x1, y1, x2, y2 in input-image pixels
+        size:       int                network input size (square)
+        mask_thres: float              probability threshold, e.g. 0.5
+    """
+    if protos.ndim == 4:
+        protos = protos[0]                                # (32, mh, mw): drop batch dim
+    m = compute_masks(coefs, protos)                      # (n, mh, mw)
+    n = len(m)
+    masks = np.zeros((n, size, size), dtype=bool)         # output buffer
+    rows = np.arange(size)[:, None]                       # (size, 1): y coords
+    cols = np.arange(size)[None, :]                       # (1, size): x coords
+    for k in range(n):
+        up = cv2.resize(m[k],
+                        (size, size),
+                        interpolation=cv2.INTER_LINEAR)   # (size, size): bilinear, like F.interpolate
         x1, y1, x2, y2 = boxes[k]
-        rows, cols = np.arange(size)[:, None], np.arange(size)[None, :]
-        inside = (cols >= x1) & (cols < x2) & (rows >= y1) & (rows < y2)  # same rule as YOLOv5 crop_mask
-        masks[k] = (up > mask_thres) & inside
+        in_x = (cols >= x1) & (cols < x2)                 # (1, size)
+        in_y = (rows >= y1) & (rows < y2)                 # (size, 1)
+        inside = in_x & in_y                              # (size, size): broadcast, same rule as YOLOv5 crop_mask
+        fg = up > mask_thres                              # (size, size): foreground pixels
+        masks[k] = fg & inside                            # keep only foreground inside the box
     return masks
 
 
