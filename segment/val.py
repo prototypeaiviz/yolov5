@@ -278,7 +278,7 @@ def run(
                                         multi_label=True,
                                         agnostic=single_cls,
                                         max_det=max_det,
-                                        nm=nm)
+                                        nm=protos.shape[1])  # mask count from the prototypes: 32, 64, ...; works for every backend
 
         # Metrics
         plot_masks = []  # masks for plotting
