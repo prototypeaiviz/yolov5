@@ -164,9 +164,9 @@ experiments:         # segment/run_experiments.py: train these one after another
   skip_done: true    # skip training when <project>/<name>/weights/best.pt already exists
   report_torch: true
   report_onnx: false
-  only: [7, 11, 12, 13, 14, 15, 16, 17]  # run numbers to execute (position in the list below, 1 = first); [] = all runs
+  only: [18, 19, 20]  # run numbers to execute (position in the list below, 1 = first); [] = all runs
   runs:
-    # 2026-11-13: experiments 1-8 defined. 2026-11-16: 9-10 added. 2026-11-19: 11-17 added; 7 (never trained) and 11-17 execute.
+    # 2026-11-13: experiments 1-8 defined. 2026-11-16: 9-10 added. 2026-11-19: 11-17 added. 2026-11-20: 18-20 added; only 18-20 execute (7 = rconv, out of memory at batch 16).
     # COCO initialization, original LINEAR SGD; ONE change per run, not cumulative.
     # Reference: historical v18_yolov5s_seg_640_nomosaic_proto2x (100 epochs, linear SGD).
     # EXP202600018 (200 epochs) remains the longer-training comparison, not the matched control.
@@ -362,3 +362,44 @@ experiments:         # segment/run_experiments.py: train these one after another
       oom_batch_sizes: []
       hyp: Config/hyp.bismart.proto2x.mosaic.yaml
       extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 100 --save-period 25"
+
+    # ---- 2026-11-20: follow-up runs after the results of runs 11-17 ----
+    # Torch mask mAP50-95 vs run 10 (0.869): 200 epochs +0.021 (0.890), 704 x 1152 +0.016 (0.885).
+    # Seed noise is about 0.002 (run 16). Runs 18-20 combine the two winners; all execute (see `only`).
+
+    # 18. 704 x 1152 + mosaic + 200 epochs: combines the two best changes (run 13 shape + run 12 budget).
+    # Patience 200 keeps the full budget. About 3 h. Same inference cost as run 13.
+    - name: v17_yolov5s_seg_704x1152_mosaic_proto2x_sgd_linear_e200
+      weights: yolov5s-seg.pt
+      cfg: models/segment/yolov5s-seg-proto2x.yaml
+      imgsz: 1152
+      fixed_shape: [704, 1152]
+      epochs: 200
+      batch_size: 8
+      oom_batch_sizes: []
+      hyp: Config/hyp.bismart.proto2x.mosaic.yaml
+      extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 200 --save-period 50"
+
+    # 19. Run 18 + scale 0.25. At 640 x 1248, scale 0.25 gave only ~+0.006 (training val); tests it at 200 epochs.
+    - name: v17_yolov5s_seg_704x1152_mosaic_scale0p25_proto2x_sgd_linear_e200
+      weights: yolov5s-seg.pt
+      cfg: models/segment/yolov5s-seg-proto2x.yaml
+      imgsz: 1152
+      fixed_shape: [704, 1152]
+      epochs: 200
+      batch_size: 8
+      oom_batch_sizes: []
+      hyp: Config/hyp.bismart.proto2x.mosaic.scale0p25.yaml
+      extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 200 --save-period 50"
+
+    # 20. Run 18 repeated with seed 1: confirms the result before choosing the production model.
+    - name: v17_yolov5s_seg_704x1152_mosaic_proto2x_sgd_linear_e200_seed1
+      weights: yolov5s-seg.pt
+      cfg: models/segment/yolov5s-seg-proto2x.yaml
+      imgsz: 1152
+      fixed_shape: [704, 1152]
+      epochs: 200
+      batch_size: 8
+      oom_batch_sizes: []
+      hyp: Config/hyp.bismart.proto2x.mosaic.yaml
+      extra_args: "--mask-ratio 2 --optimizer SGD --seed 1 --patience 200 --save-period 50"
