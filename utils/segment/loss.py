@@ -97,7 +97,7 @@ class ComputeLoss:
 
                 # Mask regression
                 if tuple(masks.shape[-2:]) != (mask_h, mask_w):  # downsample
-                    masks = F.interpolate(masks[None], (mask_h, mask_w), mode="nearest")[0]
+                    masks = F.interpolate(masks[None].float(), (mask_h, mask_w), mode="nearest")[0]
                 marea = xywhn[i][:, 2:].prod(1)  # mask width, height normalized
                 mxyxy = xywh2xyxy(xywhn[i] * torch.tensor([mask_w, mask_h, mask_w, mask_h], device=self.device))
                 for bi in b.unique():
@@ -108,7 +108,9 @@ class ComputeLoss:
                     if self.overlap:
                         mask_gti = torch.where(masks[bi][None] == tidxs[i][j].view(-1, 1, 1), 1.0, 0.0)
                     else:
-                        mask_gti = masks[tidxs[i]][j]
+                        # index first, then gather: masks[tidxs[i]][j] copied the mask of every match in the batch
+                        # (thousands with --no-overlap on crowded images) and ran out of GPU memory
+                        mask_gti = masks[tidxs[i][j]].float()  # masks may arrive as uint8 (see train.py)
                     lseg += self.single_mask_loss(mask_gti, pmask[j], proto[bi], mxyxy[j], marea[j])
 
             obji = self.BCEobj(pi[..., 4], tobj)

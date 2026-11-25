@@ -152,9 +152,22 @@ registry:            # segment/experiment_registry.py: one results-sheet row per
       Scope: "Product + cavity"
       Number of Classes: 2
       Dataset Version: "two_classes_v01"
+    bismart_product_only.yaml:
+      Scope: "Product only (images of the 2-class data)"
+      Number of Classes: 1
+      Dataset Version: "two_classes_v01"
 
 report:
   summary_csv: "bin/summary.csv"  # one row per report run (Torch and ONNX); empty = do not write
+
+class_subset:        # segment/make_class_subset.py: copy of a YOLO dataset with only some classes (images = hard links)
+  source: "/media/aiviz05/Dati/DATA/BISMART/dataset_two_classes_v01"  # training PC: check this path
+  target: "/media/aiviz05/Dati/DATA/BISMART/dataset_two_classes_v01_product_only"  # same drive as source
+  keep: [0]          # source class IDs to keep, renumbered 0, 1, ... in this order (0 = product)
+  names: [product]   # names of the kept classes, same order as keep
+  yaml_name: "bismart_product_only.yaml"
+  splits: [train, val]
+  overwrite: false
 
 experiments:         # segment/run_experiments.py: train these one after another, then report each best.pt
   # Same dataset as Excel: Advantech India, v17, Product only, one class.
@@ -169,9 +182,9 @@ experiments:         # segment/run_experiments.py: train these one after another
   skip_done: true    # skip training when <project>/<name>/weights/best.pt already exists
   report_torch: true
   report_onnx: false
-  only: [21]  # run numbers to execute (position in the list below, 1 = first); [] = all runs
+  only: [22, 23, 24]  # run numbers to execute (position in the list below, 1 = first); [] = all runs
   runs:
-    # 2026-11-13: experiments 1-8 defined. 2026-11-16: 9-10 added. 2026-11-19: 11-17 added. 2026-11-20: 18-20 added. 2026-11-25: 21 added (2 classes); only 21 executes (7 = rconv, out of memory at batch 16).
+    # 2026-11-13: experiments 1-8 defined. 2026-11-16: 9-10 added. 2026-11-19: 11-17 added. 2026-11-20: 18-20 added. 2026-11-25: 21-24 added (2 classes); only 22-24 execute (21 = overlap masks, cavity with a hole: not wanted) (7 = rconv, out of memory at batch 16).
     # COCO initialization, original LINEAR SGD; ONE change per run, not cumulative.
     # Reference: historical v18_yolov5s_seg_640_nomosaic_proto2x (100 epochs, linear SGD).
     # EXP202600018 (200 epochs) remains the longer-training comparison, not the matched control.
@@ -409,7 +422,12 @@ experiments:         # segment/run_experiments.py: train these one after another
       hyp: Config/hyp.bismart.proto2x.mosaic.yaml
       extra_args: "--mask-ratio 2 --optimizer SGD --seed 1 --patience 200 --save-period 50"
 
-    # 21. Two classes (0 = product, 1 = cavity), dataset_two_classes_v01. Same settings as run 19, the best 1-class run
+    # Memory (measured 2026-11-25, laptop, 1 epoch, batch 4, 704x1152): overlap 4.83 GB, --no-overlap 4.89 GB,
+    # --no-overlap + mask_max 128 6.45 GB. Batch 8 on the 10 GB RTX 3080 is tight, and mask_max 128 will not fit,
+    # so runs 21-24 fall back to batch 6, then 4, on out of memory. experiments.csv records the batch used.
+    # 21. NOT RUN (2026-11-25 decision: cavity masks must be full; run 21 keeps the YOLOv5 overlap masks, which cut
+    # a hole in every cavity, see docs/two_class_cavity_masks_and_crop_robustness.md). Kept as a reference.
+    # Two classes (0 = product, 1 = cavity), dataset_two_classes_v01. Same settings as run 19, the best 1-class run
     # (Torch mask mAP50-95 0.9070). data_yaml overrides experiments.data_yaml for this run (training and report).
     # Check the path on the training PC. Each image has up to 360 objects; map.max_det is 1000.
     - name: v01_2cls_yolov5s_seg_704x1152_mosaic_scale0p25_proto2x_sgd_linear_e200
@@ -420,6 +438,51 @@ experiments:         # segment/run_experiments.py: train these one after another
       fixed_shape: [704, 1152]
       epochs: 200
       batch_size: 8
-      oom_batch_sizes: []
+      oom_batch_sizes: [6, 4]  # see the memory note above run 21
+      hyp: Config/hyp.bismart.proto2x.mosaic.scale0p25.yaml
+      extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 200 --save-period 50"
+
+    # 22. Run 21 + --no-overlap. With overlap masks (YOLOv5 default) all objects of an image share one mask image
+    # and the smaller object is drawn over the larger one: the product sits inside its cavity, so the cavity
+    # training mask gets a hole where the product is. The C++ evaluation and the Torch report score the full cavity
+    # polygon. --no-overlap gives every object its own full mask.
+    - name: v01_2cls_yolov5s_seg_704x1152_mosaic_scale0p25_proto2x_nooverlap_sgd_linear_e200
+      data_yaml: "/media/aiviz05/Dati/DATA/BISMART/dataset_two_classes_v01/bismart_2cls.yaml"  # training PC
+      weights: yolov5s-seg.pt
+      cfg: models/segment/yolov5s-seg-proto2x.yaml
+      imgsz: 1152
+      fixed_shape: [704, 1152]
+      epochs: 200
+      batch_size: 8
+      oom_batch_sizes: [6, 4]  # see the memory note above run 21
+      hyp: Config/hyp.bismart.proto2x.mosaic.scale0p25.yaml
+      extra_args: "--mask-ratio 2 --no-overlap --optimizer SGD --seed 0 --patience 200 --save-period 50"
+
+    # 23. Run 22 + mask_max 128 (was 64): images have up to 360 objects (mean 41), so more matched predictions
+    # get a mask loss in crowded images.
+    - name: v01_2cls_yolov5s_seg_704x1152_mosaic_scale0p25_maskmax128_proto2x_nooverlap_sgd_linear_e200
+      data_yaml: "/media/aiviz05/Dati/DATA/BISMART/dataset_two_classes_v01/bismart_2cls.yaml"  # training PC
+      weights: yolov5s-seg.pt
+      cfg: models/segment/yolov5s-seg-proto2x.yaml
+      imgsz: 1152
+      fixed_shape: [704, 1152]
+      epochs: 200
+      batch_size: 8
+      oom_batch_sizes: [6, 4]  # see the memory note above run 21
+      hyp: Config/hyp.bismart.proto2x.mosaic.scale0p25.maskmax128.yaml
+      extra_args: "--mask-ratio 2 --no-overlap --optimizer SGD --seed 0 --patience 200 --save-period 50"
+
+    # 24. Product only (1 class) on the same images as runs 21-23, run 19 settings. Shows whether learning the
+    # cavity class costs product accuracy: compare its Product Mask mAP50-95 with runs 21-23 (same val images).
+    # Build the dataset first on the training PC: python segment/make_class_subset.py (settings: class_subset).
+    - name: v01_productonly_yolov5s_seg_704x1152_mosaic_scale0p25_proto2x_sgd_linear_e200
+      data_yaml: "/media/aiviz05/Dati/DATA/BISMART/dataset_two_classes_v01_product_only/bismart_product_only.yaml"  # training PC
+      weights: yolov5s-seg.pt
+      cfg: models/segment/yolov5s-seg-proto2x.yaml
+      imgsz: 1152
+      fixed_shape: [704, 1152]
+      epochs: 200
+      batch_size: 8
+      oom_batch_sizes: [6, 4]  # see the memory note above run 21
       hyp: Config/hyp.bismart.proto2x.mosaic.scale0p25.yaml
       extra_args: "--mask-ratio 2 --optimizer SGD --seed 0 --patience 200 --save-period 50"
