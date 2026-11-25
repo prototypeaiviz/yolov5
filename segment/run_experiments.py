@@ -45,12 +45,17 @@ from segment import model_report  # noqa: E402
 OOM_MARKERS = ('CUDA out of memory', 'OutOfMemoryError', 'CUBLAS_STATUS_ALLOC_FAILED')
 
 
+def run_data_yaml(config, run):
+    """Dataset yaml of one experiment: run.data_yaml, else experiments.data_yaml, else dataset.data_yaml."""
+    return run.get('data_yaml', None) or config.experiments.data_yaml or config.dataset.data_yaml
+
+
 def train_command(config, run, batch_size):
     """segment/train.py command for one experiment."""
     ex = config.experiments
     cmd = [sys.executable, os.path.join(ROOT, 'segment', 'train.py'),
            '--weights', run.weights,
-           '--data', ex.data_yaml or config.dataset.data_yaml,
+           '--data', run_data_yaml(config, run),
            '--imgsz', str(run.get('imgsz', 640)),
            '--epochs', str(run.get('epochs', ex.epochs)),
            '--batch-size', str(batch_size),
@@ -187,7 +192,7 @@ def report(config, run, backend):
     cfg.model.weights = os.path.join(ROOT, ex.project, run.name, 'weights', 'best.pt')
     cfg.model.imgsz = run.get('imgsz', 640)
     cfg.model.fixed_shape = list(run.get('fixed_shape', None) or [])
-    cfg.dataset.data_yaml = ex.data_yaml or config.dataset.data_yaml
+    cfg.dataset.data_yaml = run_data_yaml(config, run)
     if backend == 'onnx':
         cfg.onnx.weights = ''  # export this best.pt
 

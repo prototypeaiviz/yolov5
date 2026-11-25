@@ -40,14 +40,14 @@ SHEET_COLUMNS = [
     'Box mAP50 Torch', 'Box mAP50-95 Torch', 'Mask mAP50 Torch', 'Mask mAP50-95 Torch', 'Mask mAP75 Torch',
     'IoU Torch', 'Precision Torch', 'Recall Torch',
     'Box mAP50 TRT', 'Box mAP50-95 TRT', 'Mask mAP50 TRT', 'Mask mAP50-95 TRT', 'Mask mAP75 TRT',
-    'IoU TRT', 'Precision TRT', 'Recall TRT', 'Product Mask mAP50-95 TRT',
+    'IoU TRT', 'Precision TRT', 'Recall TRT', 'Product Mask mAP50-95 TRT', 'Cavity Mask mAP50-95 TRT',
     'Notes', 'Configuration']
 TORCH_KEYS = ['Torch Pre (ms)', 'Torch Model (ms)', 'Torch Post (ms)', 'Torch Total Avg (ms)', 'Box mAP50 Torch',
               'Box mAP50-95 Torch', 'Mask mAP50 Torch', 'Mask mAP50-95 Torch', 'Mask mAP75 Torch', 'IoU Torch',
               'Precision Torch', 'Recall Torch']
 TRT_KEYS = ['TRT Pre (ms)', 'TRT Model (ms)', 'TRT Post (ms)', 'TRT Total Avg (ms)', 'TRT P95 (ms)', 'Box mAP50 TRT',
             'Box mAP50-95 TRT', 'Mask mAP50 TRT', 'Mask mAP50-95 TRT', 'Mask mAP75 TRT', 'IoU TRT', 'Precision TRT',
-            'Recall TRT', 'Product Mask mAP50-95 TRT']
+            'Recall TRT', 'Product Mask mAP50-95 TRT', 'Cavity Mask mAP50-95 TRT']
 RUN_STAMP = re.compile(r'Run_(\d{8}_\d{6})_')
 
 
@@ -260,6 +260,7 @@ def main(config):
     label = lambda h, t: f"{names.get(h, h)} / {t['OS']} / {t['GPU']}"  # noqa: E731
 
     defaults = OmegaConf.to_container(rc.defaults, resolve=True)
+    data_overrides = OmegaConf.to_container(rc.get('data_overrides', None) or OmegaConf.create({}), resolve=True)
     sheet_rows, detail_rows = [], []
     excluded = set(rc.get('exclude') or [])
     all_runs = sorted((set(runs) | set(reports) | {r for r, _ in trt}) - excluded)
@@ -268,6 +269,8 @@ def main(config):
         tr = runs.get(name)
         if tr:
             row.update(tr)
+            # dataset-specific columns (Scope, Number of Classes ...), keyed by the data yaml file name
+            row.update(data_overrides.get(os.path.basename(str(tr.get('Data yaml', ''))), {}))
             row['Inspection Resolution'] = tr['Train Resolution']
         else:  # training folder not available: training time from the runner logs only
             row['Run name'] = name
